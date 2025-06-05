@@ -1,0 +1,8 @@
+attendance-api/node_modules
+attendance-api/.env
+attendance-api/package-lock.json
+# Python compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+.env
