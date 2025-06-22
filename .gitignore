@@ -1,4 +1,5 @@
 attendance-api/node_modules
+system_manager/node_modules
 attendance-api/.env
 attendance-api/package-lock.json
 # Python compiled files

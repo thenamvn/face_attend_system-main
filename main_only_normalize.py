@@ -59,16 +59,7 @@ class FaceRecognitionSystem:
         self.spoof_score_threshold = 0.6
     
     def process_image(self, image):
-        timing_stats = {
-            "detection": 0,
-            "recognition": 0,
-            "spoofing": 0,
-            "total": 0
-        }
-        
-        total_start = time.time()
         # 1. Detect faces
-        detection_start = time.time()
         boxes, scores = self.detector.detect_faces(image)
         
         # Apply non-maximum suppression
@@ -87,7 +78,6 @@ class FaceRecognitionSystem:
                     
                 boxes = boxes[indices]
                 scores = scores[indices]
-        timing_stats["detection"] = time.time() - detection_start
         results = []
         for i, (box, score) in enumerate(zip(boxes, scores)):
             # Format box to x1, y1, x2, y2
@@ -102,8 +92,6 @@ class FaceRecognitionSystem:
             x1, y1, x2, y2 = box
             if x2 <= x1 or y2 <= y1:
                 continue  # Skip invalid boxes
-            
-            recognition_start = time.time()
             
             face_crop = image[y1:y2, x1:x2]
             # 2. Get landmarks for alignment
@@ -123,7 +111,6 @@ class FaceRecognitionSystem:
             
             # 5. Verify face against database
             name, confidence = self.verifier.find_best_match(embedding, threshold=0.68)
-            timing_stats["recognition"] = time.time() - recognition_start
             # --- Tối ưu hóa Anti-spoofing ---
             is_real = True  # Default to real for known faces initially
             spoof_score = 0.0 # Default score
@@ -155,7 +142,7 @@ class FaceRecognitionSystem:
                 # Mark fake faces only if they were initially recognized
                 if not is_real:
                     name = f"FAKE: {original_name}" 
-                timing_stats["spoofing"] = time.time() - spoofing_start
+
             results.append({
                 "box": (x1, y1, x2, y2),
                 "name": name, # Tên đã có thể bị sửa thành "FAKE: ..."
@@ -165,15 +152,6 @@ class FaceRecognitionSystem:
                 "spoof_score": spoof_score # Chỉ có ý nghĩa nếu name != "Unknown"
             })
         
-        timing_stats["total"] = time.time() - total_start
-        if results:
-            results[0]['overall_timing'] = timing_stats  # Chỉ lưu timing cho kết quả đầu tiên
-        
-        print(f"⏱️ Processing time - Detection: {timing_stats['detection']*1000:.1f}ms, "
-            f"Recognition: {timing_stats['recognition']*1000:.1f}ms, "
-            f"Spoofing: {timing_stats['spoofing']*1000:.1f}ms, "
-            f"Total: {timing_stats['total']*1000:.1f}ms")
-        # Return results with timing info
         return results
 
     def add_face_with_augmentation(self, image, name):

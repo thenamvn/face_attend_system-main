@@ -7,7 +7,7 @@ from normalizer.image_preprocess import normalize_face
 import time
 import traceback
 class FaceDatabaseManager:
-    def __init__(self, image_dir, backup_path, detector, aligner, embedder, api_url="https://attendance-api-dm9x.onrender.com/api/faces"):
+    def __init__(self, image_dir, backup_path, detector, aligner, embedder, api_url="https://render-face-system-api.onrender.com/api/faces"):
         self.image_dir = image_dir
         self.backup_path = backup_path
         self.detector = detector

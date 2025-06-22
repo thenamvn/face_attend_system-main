@@ -5,7 +5,7 @@ import threading
 import queue
 
 class AttendanceAPIClient:
-    def __init__(self, api_url="https://attendance-api-dm9x.onrender.com/api/attendance", retry_interval=5, max_retries=1):
+    def __init__(self, api_url="https://render-face-system-api.onrender.com/api/attendance", retry_interval=5, max_retries=1):
         """
         Initialize the Attendance API Client
         
