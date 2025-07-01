@@ -18,6 +18,10 @@ const FaceRecognitionData = db.define('face_recognition_data', {
     onDelete: 'CASCADE',
     onUpdate: 'CASCADE'
   },
+  full_name: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
   face_embedding: {
     type: DataTypes.JSON,
     allowNull: false
