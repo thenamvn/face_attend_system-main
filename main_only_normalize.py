@@ -242,6 +242,8 @@ class FaceRecognitionSystem:
             success = self.db_manager.add_face(name, id_real, full_name, embedding)
             
             if success:
+                self.face_db = self.db_manager.face_db
+                self.verifier.update_database(self.face_db)  # Rebuild FAISS index
                 print(f"✅ Added face for '{name}' (ID: {id_real}) to database via API")
             else:
                 print(f"⚠️ Face was added to local database but API save failed")
