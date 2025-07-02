@@ -10,9 +10,8 @@ from verifier.face_verifier import FaceVerifier
 from database.face_database_manager import FaceDatabaseManager
 from antispoof.Fasnet import Fasnet
 from thread.thread import VideoCaptureThread
-from ui.ui import FaceRecognitionUI
+from ui.ui import FaceRecognitionTkinterUI
 from mail.SpoofAlertManager import SpoofAlertManager
-import pygame
 import numpy as np
 import time
 import threading
@@ -80,13 +79,6 @@ class FaceRecognitionSystem:
                 scores = scores[indices]
         results = []
         for i, (box, score) in enumerate(zip(boxes, scores)):
-            # Format box to x1, y1, x2, y2
-            x1, y1, x2, y2 = map(int, box)
-            
-            # # Make sure box coordinates are valid
-            # x1, y1 = max(0, x1), max(0, y1)
-            # x2, y2 = min(image.shape[1], x2), min(image.shape[0], y2)
-            
             # Format box to x1, y1, x2, y2 and validate
             box = np.clip(box.astype(int), [0, 0, 0, 0], [image.shape[1], image.shape[0], image.shape[1], image.shape[0]])
             x1, y1, x2, y2 = box
@@ -348,84 +340,8 @@ class MotionController:
         """Clean up resources"""
         if self.cooldown_timer:
             self.cooldown_timer.cancel()
-            
-def enhance_lighting(image):
-    """Enhance image for better face recognition in poor lighting conditions"""
-    # Convert to LAB color space
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    
-    # Split channels
-    l, a, b = cv2.split(lab)
-    
-    # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to L channel
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    enhanced_l = clahe.apply(l)
-    
-    # Merge enhanced L with original A and B
-    enhanced_lab = cv2.merge((enhanced_l, a, b))
-    
-    # Convert back to BGR
-    enhanced_image = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
-    
-    return enhanced_image
 
-def auto_brightness_adjustment(image):
-    """Automatically adjust brightness based on scene conditions"""
-    # Calculate average brightness
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    avg_brightness = cv2.mean(gray)[0]
-    
-    # If too dark (adjust threshold as needed)
-    if avg_brightness < 80:  
-        # Increase brightness
-        alpha = 1.5  # Contrast control
-        beta = 30    # Brightness control
-        adjusted = cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
-        return adjusted
-    
-    # If too bright
-    elif avg_brightness > 220:
-        # Decrease brightness
-        alpha = 0.8  # Contrast control
-        beta = -10   # Brightness control
-        adjusted = cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
-        return adjusted
-    
-    # If normal brightness
-    else:
-        return image
-
-def assess_lighting_quality(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-    # Cắt vùng trung tâm ảnh (ví dụ 50% giữa ảnh)
-    h, w = gray.shape
-    cx1, cx2 = int(w*0.25), int(w*0.75)
-    cy1, cy2 = int(h*0.25), int(h*0.75)
-    center_region = gray[cy1:cy2, cx1:cx2]
-
-    avg_brightness = cv2.mean(center_region)[0]
-    std_dev = cv2.meanStdDev(center_region)[1][0][0]
-
-    if avg_brightness < 50:
-        return "Too Dark"
-    elif avg_brightness > 200:
-        return "Too Bright"
-    elif std_dev < 25:
-        return "Low Contrast"
-    else:
-        return "Good"
-
-def get_lighting_color(status):
-    """Get color for displaying lighting status"""
-    if status == "Good":
-        return (0, 255, 0)  # Green
-    elif status in ["Low Contrast"]:
-        return (0, 165, 255)  # Orange
-    else:
-        return (0, 0, 255)  # Red
-    
-def draw_results(image, results):
+def draw_results_on_frame(image, results):
     """Draw bounding boxes and names on the image"""
     for result in results:
         x1, y1, x2, y2 = result["box"]
@@ -452,50 +368,14 @@ def draw_results(image, results):
     
     return image
 
-# Modify add_face_handler to work with the new motion controller
-def add_face_handler(ui, cap, face_system, motion_controller):
-    """
-    Handler for adding faces to the database
-    
-    Works with both active and standby modes by:
-    1. Using the last frame if in standby
-    2. Temporarily forcing active mode
-    """
-    was_standby = not motion_controller.is_active()
-    
-    # Force active mode if needed
-    if was_standby:
-        motion_controller.force_active(True)
-        # Small delay to get a good frame
-        time.sleep(0.5)
-    
-    # Get the current frame
-    frozen_frame = cap.read().copy()
-    
-    # Draw message on frame
-    message_frame = frozen_frame.copy()
-    cv2.putText(message_frame, "Enter name in terminal...", (10, 60), 
-               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-    ui.update_frame(message_frame)
-    ui.draw_ui()
-    
-    # Get name from terminal
-    name = input("Enter name for the face: ")
-    success = face_system.add_face_to_database(frozen_frame, name)
-    print(f"{'✅ Successfully added' if success else '❌ Failed to add'} {name} to database")
-    
-    # Return to standby if we were in standby before
-    if was_standby:
-        # Give user time to see result before returning to standby
-        time.sleep(3)
-        motion_controller.force_active(False)
-
 def webcam_demo():
-    """Demo face recognition using webcam with motion-based power saving"""
+    """Demo face recognition using webcam with customtkinter UI"""
     print("Initializing face recognition system...")
     face_system = FaceRecognitionSystem()
     print("System initialized! Opening webcam...")
-    ui = FaceRecognitionUI()
+    
+    # Initialize UI
+    ui = FaceRecognitionTkinterUI()
     ui.face_recognition_system = face_system
     
     # Open webcam
@@ -503,7 +383,6 @@ def webcam_demo():
     print("Webcam opened successfully!")
     
     # Initialize variables
-    use_enhancement = False  # Tắt mặc định vì không cần thiết nữa
     last_frame = None
     
     # Create standby frame
@@ -514,7 +393,7 @@ def webcam_demo():
     # Initialize motion controller
     motion_controller = MotionController(pin=14, cooldown=0)
 
-    #initialize mail alert system
+    # Initialize mail alert system
     spoof_alert = SpoofAlertManager(
         email_sender=os.getenv("EMAIL_SENDER"),
         email_password=os.getenv("EMAIL_PASSWORD"),
@@ -539,108 +418,81 @@ def webcam_demo():
     # Register callback
     motion_controller.register_callback(on_motion_change)
     
-    # Register key handlers with motion controller
-    def toggle_enhancement_handler():
-        nonlocal use_enhancement
-        use_enhancement = not use_enhancement
-        print(f"Lighting enhancement: {'ON' if use_enhancement else 'OFF'} (Note: Not needed as normalize_face handles lighting)")
+    # Main processing loop in separate thread
+    def processing_loop():
+        while not ui.should_quit():
+            try:
+                # Check motion state
+                active_mode = motion_controller.is_active()
+                
+                # If standby, display standby screen and skip heavy processing
+                if not active_mode:
+                    # KHÔNG gọi update_recognition_results ở đây nữa
+                    ui.update_frame(blank_frame)
+                    time.sleep(0.1)  # Longer delay in standby
+                    continue
+                
+                # Get current frame from camera
+                frame = cap.read()
+                if frame is None:
+                    time.sleep(0.033)
+                    continue
+                
+                # Save frame for other processing
+                last_frame = frame.copy()
+                
+                # Process frame with face recognition system
+                results = face_system.process_image(frame)
+                
+                # Update spoof alert system
+                spoof_alert.update(results, frame)
+
+                # CHỈ update recognition results khi có kết quả mới
+                if results:
+                    ui.update_recognition_results(results)
+                
+                # Process face recognition events - CHỈ KHI CÓ FACES THẬT
+                for res in results:
+                    is_real = res.get("is_real", True)
+                    name = res["name"]
+                    if name != "Unknown" and is_real:
+                        ui.add_event(name, is_real)
+                
+                # Draw results on frame
+                display_frame = draw_results_on_frame(frame.copy(), results)
+                
+                # Update frame in UI
+                ui.update_frame(display_frame)
+                
+                # Small delay to prevent CPU hogging
+                time.sleep(0.033)  # ~30 FPS
+                
+            except Exception as e:
+                print(f"Processing loop error: {e}")
+                time.sleep(0.1)
     
-    def toggle_motion_handler():
-        # Toggle motion detection override
-        motion_controller.force_active(not motion_controller.is_active())
-        print(f"Motion detection: {'OVERRIDDEN' if motion_controller.is_active() else 'ENABLED'}")
-    
-    # Register the handlers
-    ui.register_key_handler(pygame.K_a, 
-                           lambda: add_face_handler(ui, cap, face_system, motion_controller))
-    ui.register_key_handler(pygame.K_e, toggle_enhancement_handler)
-    ui.register_key_handler(pygame.K_m, toggle_motion_handler)
+    # Start processing thread
+    processing_thread = threading.Thread(target=processing_loop, daemon=True)
+    processing_thread.start()
     
     # Print instructions
     print("\n--- CONTROLS ---")
-    print("Press 'a' to add a face to the database")
-    print("Press 'e' to toggle lighting enhancement (deprecated)")
-    print("Press 'm' to toggle motion detection")
-    print("Press ESC to exit")
+    print("Press 'A' key or click button to add a face to the database")
+    print("Close window to exit")
     print("--------------\n")
     
-    while True:
-        # Handle all events (keyboard, quit, etc.)
-        ui.handle_events()
-        
-        # Check if user wants to quit
-        if ui.should_quit():
-            break
-        
-        # Check motion state
-        active_mode = motion_controller.is_active()
-        
-        # If standby, display standby screen and skip heavy processing
-        if not active_mode:
-            ui.update_recognition_results([])
-            ui.update_frame(blank_frame)
-            ui.draw_ui()
-            pygame.time.delay(100)  # Longer delay in standby
-            continue
-        
-        # Get current frame from camera
-        frame = cap.read()
-        if frame is None:
-            continue
-        
-        # Lưu frame gốc cho các xử lý khác
-        last_frame = frame.copy()
-        
-        # If a key was pressed to start adding a face, capture the current frame
-        if ui.input_active and ui.input_purpose == "add_face" and ui.captured_frame is None:
-            ui.captured_frame = frame.copy()
-        
-        # ===== XÓA PHẦN XỬ LÝ ÁNH SÁNG =====
-        # Thay thế bằng đoạn mã đơn giản hơn chỉ để hiển thị thông tin ánh sáng
-        
-        # Đánh giá chất lượng ánh sáng chỉ để hiển thị thông báo
-        # lighting_status = assess_lighting_quality(frame)
-        
-        # Sử dụng frame gốc, không còn xử lý ánh sáng
-        processed_frame = frame.copy()
-        
-        # Hiển thị trạng thái ánh sáng
-        # cv2.putText(processed_frame, f"Lighting: {lighting_status}", 
-        #            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
-        #            0.7, get_lighting_color(lighting_status), 2)
-        
-        # Process frame with face recognition system - sử dụng frame gốc
-        # normalize_face() trong process_image() sẽ xử lý ánh sáng tối ưu cho mỗi khuôn mặt
-        results = face_system.process_image(frame)  # Dùng frame gốc, không phải processed_frame
-        
-        spoof_alert.update(results, frame)
-
-        # Update UI with recognition results
-        ui.update_recognition_results(results)
-        
-        # Process face recognition events
-        for res in results:
-            is_real = res.get("is_real", True)
-            name = res["name"]
-            if name != "Unknown" and is_real:
-                ui.add_event(name, is_real)
-        
-        # Update frame and draw UI 
-        ui.update_frame(processed_frame)
-        ui.draw_ui()
-        
-        # Small delay to prevent CPU hogging
-        pygame.time.delay(10)
-    
-    # Clean up
-    motion_controller.cleanup()
-    cap.stop()
-    ui.close()
-    spoof_alert.stop()
-    cv2.destroyAllWindows()
-
-# Keep all other functions unchanged
-# (FaceRecognitionSystem, enhance_lighting, assess_lighting_quality, etc.)
+    try:
+        # Run UI main loop
+        ui.run()
+    except KeyboardInterrupt:
+        print("Interrupted by user")
+    finally:
+        # Clean up
+        print("Cleaning up...")
+        motion_controller.cleanup()
+        cap.stop()
+        ui.close()
+        spoof_alert.stop()
 
 def image_demo(image_path):
     """Demo face recognition on a single image"""
@@ -658,14 +510,13 @@ def image_demo(image_path):
     print(f"Found {len(results)} faces")
     
     # Draw results
-    display_image = draw_results(image.copy(), results)
+    display_image = draw_results_on_frame(image.copy(), results)
     
     # Display results
     cv2.imshow('Face Recognition', display_image)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
-# Keep only one main block at the end of file
 if __name__ == "__main__":
     import sys
     

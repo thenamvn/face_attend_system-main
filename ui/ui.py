@@ -1,532 +1,502 @@
-import pygame
-import time
+import customtkinter as ctk
 import cv2
+from PIL import Image, ImageTk
+import time
+import threading
+from queue import Queue, Empty
 from api.AttendanceAPIClient import AttendanceAPIClient
-import os  # Import os for path operations
 
 
-class FaceRecognitionUI:
-    def __init__(self, width=1280, height=720, hide_cursor=True):
-        pygame.init()
-        # It's good practice to initialize the font module explicitly,
-        # though pygame.init() usually does it.
-        pygame.font.init()
-
+class FaceRecognitionTkinterUI:
+    def __init__(self, width=1280, height=720):
+        # Set appearance mode and color theme
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("blue")
+        
         self.width = width
         self.height = height
-        self.window = pygame.display.set_mode((self.width, self.height), pygame.FULLSCREEN)
-        if hide_cursor:
-            pygame.mouse.set_visible(False)
-        pygame.display.set_caption(
-            "Face Recognition System - Hệ thống nhận diện khuôn mặt")  # Example UTF-8 in title
-
-        # --- Font Loading for UTF-8 Support ---
-        font_size = 24
-        small_font_size = 18
-        # Define path relative to the script location
-        # Assumes 'fonts' directory is in the same place as the script
-        try:
-            # Construct the path to the font file
-            # Use os.path.join for cross-platform compatibility
-            # Gets the directory where the script is located
-            base_path = os.path.dirname(__file__)
-            # Adjust filename if needed
-            font_path = os.path.join(
-                base_path, "fonts", "NotoSans-Regular.ttf")
-
-            if not os.path.exists(font_path):
-                # If not found relative to script, maybe it's relative to CWD?
-                font_path = os.path.join("fonts", "NotoSans-Regular.ttf")
-                if not os.path.exists(font_path):
-                    raise FileNotFoundError(
-                        f"Font file not found at expected paths.")
-
-            print(f"Loading font: {font_path}")  # Debug print
-            self.font = pygame.font.Font(font_path, font_size)
-            self.small_font = pygame.font.Font(font_path, small_font_size)
-            print("Custom font loaded successfully.")
-        except (FileNotFoundError, pygame.error) as e:
-            print(
-                f"Warning: Could not load custom font ('{font_path}'). Error: {e}")
-            print(
-                "Falling back to default system font. Unicode characters might not display correctly.")
-            # Fallback to a system font (less reliable for specific Unicode)
-            self.font = pygame.font.SysFont("Arial", font_size)
-            self.small_font = pygame.font.SysFont("Arial", small_font_size)
-        # --- End Font Loading ---
-
-        self.bg_color = (30, 30, 30)
-        self.frame_surface = None
-        self.event_log = []
-        self.recognition_results = []
-
-        # For UI feedback on attendance status
-        # key: id_real, value: {"status": "success/error", "message": str, "timestamp": float}
-        self.attendance_status = {}
-
-        self.original_frame_width = 640
-        self.original_frame_height = 480
-
-        self.user_cooldowns = {}
-        self.display_time = 10  # seconds
-        self.cooldown_period = 10
-        self.current_time = time.time()
-
-        self.key_handlers = {}
-        self.quit_requested = False
-
-        # Text input state for adding faces
-        self.input_active = False
-        self.input_text = ""
-        self.input_purpose = None  # What the input is for (e.g., "add_face")
-        self.captured_frame = None  # Store the frame where the face was detected
-
-        #style input
-        self.input_color_active = (75, 0, 130)
-        self.input_color_inactive = (100, 100, 100)
-        self.input_rect = pygame.Rect(self.width // 4, self.height // 2 - 20, self.width // 2, 40)
-
-        self.face_recognition_system = None
         
-        # Initialize the API client with callbacks
+        # Initialize main window
+        self.root = ctk.CTk()
+        self.root.title("Face Recognition System - Hệ thống nhận diện khuôn mặt")
+        self.root.geometry(f"{width}x{height}")
+        self.root.state('zoomed')  # Fullscreen on Windows
+        
+        # Thread-safe queues for UI updates
+        self.frame_queue = Queue(maxsize=2)
+        self.event_queue = Queue(maxsize=20)  # Chỉ queue events thôi, không queue results
+        self.status_queue = Queue(maxsize=20)
+        
+        # UI state variables
+        self.current_frame = None
+        self.recognition_results = []
+        self.event_log = []
+        self.attendance_status = {}
+        self.user_cooldowns = {}
+        self.display_time = 10
+        self.cooldown_period = 10
+        
+        # Event widgets cache để tránh recreate
+        self.event_widgets = {}
+        self.last_event_update = 0
+        self.event_update_interval = 1.0  # Chỉ update events mỗi 1 giây
+        
+        # Face recognition system reference
+        self.face_recognition_system = None
+        self.quit_requested = False
+        
+        # Initialize API client
         self.api_client = AttendanceAPIClient()
         self.api_client.register_callbacks(
             success_callback=self.on_attendance_success,
             error_callback=self.on_attendance_error
         )
         self.api_client.start()
-
-    def on_attendance_success(self, attendance_data, response_data):
-        """Callback for successful attendance recording"""
-        id_real = attendance_data['id_real']
-        name = attendance_data['name']
-
-        # Update status with success message
-        self.attendance_status[id_real] = {
-            "status": "success",
-            "message": f"✅ Recorded: {name}",
-            "timestamp": time.time(),
-            "name": name
-        }
-
-    def on_attendance_error(self, attendance_data, error_msg):
-        """Callback for attendance recording error"""
-        id_real = attendance_data['id_real']
-        name = attendance_data['name']
-
-        # Update status with error message
-        self.attendance_status[id_real] = {
-            "status": "error",
-            "message": f"❌ Failed: {name}",
-            "timestamp": time.time(),
-            "name": name
-        }
-    def draw_attendance_status(self):
-        """Draw attendance status notifications on the UI"""
-        now = time.time()
         
-        # Remove old status messages (keep for longer - 60 seconds instead of 10)
-        expired_ids = []
-        attendance_display_time = 60  # Show attendance status for 60 seconds
+        # Setup UI
+        self._setup_ui()
         
-        for id_real, status_data in self.attendance_status.items():
-            if now - status_data["timestamp"] > attendance_display_time:
-                expired_ids.append(id_real)
+        # Start UI update thread
+        self.ui_thread_running = True
+        self.ui_update_thread = threading.Thread(target=self._ui_update_loop, daemon=True)
+        self.ui_update_thread.start()
         
-        for id_real in expired_ids:
-            del self.attendance_status[id_real]
+        # Bind close event
+        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
         
-        # Update the status_messages dictionary for draw_ui to use
-        self.status_messages = {}
-        for id_real, status_data in self.attendance_status.items():
-            message_prefix = "✅ Điểm danh: " if status_data["status"] == "success" else "❌ Lỗi: "
-            self.status_messages[id_real] = {
-                "color": (0, 255, 0) if status_data["status"] == "success" else (255, 0, 0),
-                "message": status_data["message"]
-            }
-    def register_key_handler(self, key, handler_function):
-        """Register a function to be called when a specific key is pressed"""
-        self.key_handlers[key] = handler_function
-
-    def handle_events(self):
-        """Handle all pygame events in one place"""
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                self.quit_requested = True
-                return
-            elif event.type == pygame.KEYDOWN:
-                if self.input_active:
-                    # Let the process_event method handle the input
-                    self.process_event(event)
-                else:
-                    if event.key == pygame.K_ESCAPE:
-                        self.quit_requested = True
-                        return
-                    elif event.key == pygame.K_a:
-                        # Start adding face - store the current frame later
-                        self.input_active = True
-                        self.input_text = ""
-                        self.input_purpose = "add_face"
-                        # The frame will be captured when the UI is updated next
-                    elif event.key in self.key_handlers:
-                        # Call the registered handler
-                        self.key_handlers[event.key]()
-
-    def should_quit(self):
-        """Check if quit was requested"""
-        return self.quit_requested
-
-    # Removed redundant handle_quit method - use should_quit() and handle_events()
-
+    def _setup_ui(self):
+        """Setup the main UI layout"""
+        # Configure grid weights
+        self.root.grid_columnconfigure(0, weight=2)  # Camera frame
+        self.root.grid_columnconfigure(1, weight=1)  # Right panel
+        self.root.grid_rowconfigure(0, weight=1)
+        
+        # Left frame for camera
+        self.camera_frame = ctk.CTkFrame(self.root)
+        self.camera_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+        self.camera_frame.grid_rowconfigure(0, weight=1)
+        self.camera_frame.grid_columnconfigure(0, weight=1)
+        
+        # Camera display label
+        self.camera_label = ctk.CTkLabel(
+            self.camera_frame, 
+            text="Waiting for camera...",
+            font=ctk.CTkFont(size=20)
+        )
+        self.camera_label.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+        
+        # Right frame for recognition results
+        self.right_frame = ctk.CTkFrame(self.root)
+        self.right_frame.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
+        self.right_frame.grid_columnconfigure(0, weight=1)
+        
+        # Title for recognition panel
+        self.recognition_title = ctk.CTkLabel(
+            self.right_frame,
+            text="Recent Recognitions",
+            font=ctk.CTkFont(size=18, weight="bold")
+        )
+        self.recognition_title.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+        
+        # Scrollable frame for recognition events
+        self.scrollable_frame = ctk.CTkScrollableFrame(self.right_frame)
+        self.scrollable_frame.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="nsew")
+        self.right_frame.grid_rowconfigure(1, weight=1)
+        
+        # Control buttons frame
+        self.control_frame = ctk.CTkFrame(self.right_frame)
+        self.control_frame.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
+        
+        # Add face button
+        self.add_face_btn = ctk.CTkButton(
+            self.control_frame,
+            text="Add Face (A)",
+            command=self._add_face_dialog,
+            font=ctk.CTkFont(size=14)
+        )
+        self.add_face_btn.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        
+        # Status label
+        self.status_label = ctk.CTkLabel(
+            self.control_frame,
+            text="System Ready",
+            font=ctk.CTkFont(size=12)
+        )
+        self.status_label.grid(row=1, column=0, padx=5, pady=5, sticky="ew")
+        
+        # Configure control frame
+        self.control_frame.grid_columnconfigure(0, weight=1)
+        
+        # Bind keyboard events
+        self.root.bind('<KeyPress-a>', lambda e: self._add_face_dialog())
+        self.root.bind('<KeyPress-A>', lambda e: self._add_face_dialog())
+        self.root.bind('<Escape>', lambda e: self._on_closing())
+        self.root.focus_set()  # Enable keyboard focus
+        
+    def _ui_update_loop(self):
+        """Main UI update loop running in separate thread"""
+        while self.ui_thread_running:
+            try:
+                # Update frame
+                try:
+                    frame_data = self.frame_queue.get_nowait()
+                    self._update_camera_display(frame_data)
+                except Empty:
+                    pass
+                
+                # Update events (chỉ khi có event mới)
+                has_new_events = False
+                try:
+                    while True:  # Process all pending events
+                        event_data = self.event_queue.get_nowait()
+                        has_new_events = True
+                except Empty:
+                    pass
+                
+                # Chỉ update display khi có events mới HOẶC đã qua interval
+                current_time = time.time()
+                if has_new_events or (current_time - self.last_event_update) > self.event_update_interval:
+                    self._update_recognition_display()
+                    self.last_event_update = current_time
+                
+                # Update status messages
+                try:
+                    status_data = self.status_queue.get_nowait()
+                    self._update_status_display(status_data)
+                except Empty:
+                    pass
+                
+                # Schedule next update
+                time.sleep(0.1)  # Giảm tần suất update từ 0.033 xuống 0.1
+                
+            except Exception as e:
+                print(f"UI update error: {e}")
+                time.sleep(0.1)
+    
+    def _update_camera_display(self, frame):
+        """Update camera display with new frame"""
+        try:
+            # Convert BGR to RGB
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Resize frame to fit display
+            display_height = 480
+            aspect_ratio = frame.shape[1] / frame.shape[0]
+            display_width = int(display_height * aspect_ratio)
+            
+            frame_resized = cv2.resize(frame_rgb, (display_width, display_height))
+            
+            # Convert to PIL Image and then to PhotoImage
+            pil_image = Image.fromarray(frame_resized)
+            photo = ImageTk.PhotoImage(pil_image)
+            
+            # Update label (must be done in main thread)
+            def update_label():
+                self.camera_label.configure(image=photo, text="")
+                self.camera_label.image = photo  # Keep a reference
+            
+            self.root.after(0, update_label)
+            
+        except Exception as e:
+            print(f"Camera display update error: {e}")
+    
+    def _update_recognition_display(self):
+        """Update recognition results display - CHỈ KHI CẦN THIẾT"""
+        def update_display():
+            # Lấy danh sách events hiện tại cần hiển thị
+            current_time = time.time()
+            visible_events = []
+            
+            for event in self.event_log[:20]:  # Chỉ lấy 20 events gần nhất
+                if current_time - event["timestamp"] <= self.display_time:
+                    visible_events.append(event)
+            
+            # So sánh với events hiện tại để tránh recreate không cần thiết
+            existing_widgets = list(self.scrollable_frame.winfo_children())
+            
+            # Nếu số lượng events khác nhau thì mới recreate
+            if len(visible_events) != len(existing_widgets):
+                # Clear existing widgets
+                for widget in existing_widgets:
+                    widget.destroy()
+                
+                # Create new widgets
+                for i, event in enumerate(visible_events):
+                    self._create_event_widget(event, i)
+            else:
+                # Chỉ update text của widgets hiện có
+                for i, (event, widget) in enumerate(zip(visible_events, existing_widgets)):
+                    self._update_event_widget(widget, event)
+        
+        self.root.after(0, update_display)
+    
+    def _create_event_widget(self, event, index):
+        """Create widget for recognition event"""
+        # Event frame
+        event_frame = ctk.CTkFrame(self.scrollable_frame)
+        event_frame.grid(row=index, column=0, padx=5, pady=2, sticky="ew")
+        event_frame.grid_columnconfigure(0, weight=1)
+        
+        # Name label
+        name_color = "green" if event["status"] == "REAL" else "red"
+        name_label = ctk.CTkLabel(
+            event_frame,
+            text=event["label"],
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=name_color
+        )
+        name_label.grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        
+        # Status and time
+        time_str = time.strftime("%H:%M:%S", time.localtime(event["timestamp"]))
+        status_text = f"{event['status']} - {time_str}"
+        
+        status_label = ctk.CTkLabel(
+            event_frame,
+            text=status_text,
+            font=ctk.CTkFont(size=10)
+        )
+        status_label.grid(row=1, column=0, padx=10, pady=(0, 5), sticky="w")
+        
+        # Attendance status if available
+        parts = event["label"].split('_', 1)
+        entry_id = parts[0] if len(parts) > 1 else event["label"]
+        
+        attendance_label = ctk.CTkLabel(
+            event_frame,
+            text="",
+            font=ctk.CTkFont(size=10)
+        )
+        attendance_label.grid(row=2, column=0, padx=10, pady=(0, 5), sticky="w")
+        
+        # Update attendance status
+        self._update_attendance_status(attendance_label, entry_id, event)
+        
+        # Store references for later updates
+        event_frame.name_label = name_label
+        event_frame.status_label = status_label
+        event_frame.attendance_label = attendance_label
+        event_frame.event_data = event
+    
+    def _update_event_widget(self, widget, event):
+        """Update existing event widget with new data"""
+        try:
+            if hasattr(widget, 'event_data') and widget.event_data != event:
+                # Update name label
+                name_color = "green" if event["status"] == "REAL" else "red"
+                widget.name_label.configure(text=event["label"], text_color=name_color)
+                
+                # Update status and time
+                time_str = time.strftime("%H:%M:%S", time.localtime(event["timestamp"]))
+                status_text = f"{event['status']} - {time_str}"
+                widget.status_label.configure(text=status_text)
+                
+                # Update attendance status
+                parts = event["label"].split('_', 1)
+                entry_id = parts[0] if len(parts) > 1 else event["label"]
+                self._update_attendance_status(widget.attendance_label, entry_id, event)
+                
+                # Store new event data
+                widget.event_data = event
+        except Exception as e:
+            print(f"Error updating event widget: {e}")
+    
+    def _update_attendance_status(self, attendance_label, entry_id, event):
+        """Update attendance status for an event"""
+        if entry_id in self.attendance_status:
+            status_info = self.attendance_status[entry_id]
+            attendance_label.configure(
+                text=status_info["message"],
+                text_color="green" if status_info["status"] == "success" else "red"
+            )
+        elif event["status"] == "REAL" and event["label"] != "Unknown":
+            attendance_label.configure(
+                text="Đang xử lý...",
+                text_color="gray"
+            )
+        else:
+            attendance_label.configure(text="")
+    
+    def _update_status_display(self, status_text):
+        """Update status label"""
+        def update_status():
+            self.status_label.configure(text=status_text)
+        
+        self.root.after(0, update_status)
+    
+    def _add_face_dialog(self):
+        """Show dialog to add new face"""
+        if not self.current_frame is None and self.face_recognition_system:
+            dialog = ctk.CTkInputDialog(
+                text="Enter name for the face (format: ID_Name):",
+                title="Add Face"
+            )
+            name = dialog.get_input()
+            
+            if name and name.strip():
+                # Add face in background thread
+                threading.Thread(
+                    target=self._add_face_worker,
+                    args=(self.current_frame.copy(), name.strip()),
+                    daemon=True
+                ).start()
+    
+    def _add_face_worker(self, frame, name):
+        """Worker thread for adding face"""
+        try:
+            if self.face_recognition_system:
+                success = self.face_recognition_system.add_face_to_database(frame, name)
+                message = f"✅ Added face: {name}" if success else f"❌ Failed to add: {name}"
+                
+                # Update status
+                if not self.status_queue.full():
+                    self.status_queue.put(message)
+                
+                print(message)
+        except Exception as e:
+            error_msg = f"❌ Error adding face: {str(e)}"
+            if not self.status_queue.full():
+                self.status_queue.put(error_msg)
+            print(error_msg)
+    
+    # Thread-safe methods for external updates
     def update_frame(self, frame):
-        """Cập nhật khung hình mới từ OpenCV (BGR numpy)"""
-        self.original_frame_height, self.original_frame_width = frame.shape[:2]
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame_surface = pygame.surfarray.make_surface(frame_rgb.swapaxes(0, 1))
-        display_width = int(self.width * 0.65)
-        # Maintain aspect ratio for scaling
-        original_aspect = self.original_frame_width / self.original_frame_height
-        display_height = int(display_width / original_aspect)
-        # Ensure scaled height doesn't exceed window height
-        if display_height > self.height:
-            display_height = self.height
-            display_width = int(display_height * original_aspect)
-
-        # frame_surface = pygame.transform.scale(frame_surface, (display_width, display_height))
-        frame_surface = pygame.transform.smoothscale(frame_surface, (display_width, display_height))
-        self.frame_surface = frame_surface
-
+        """Update camera frame (thread-safe)"""
+        self.current_frame = frame
+        if not self.frame_queue.full():
+            try:
+                # Remove old frame if queue is full
+                try:
+                    self.frame_queue.get_nowait()
+                except Empty:
+                    pass
+                self.frame_queue.put(frame)
+            except:
+                pass
+    
     def update_recognition_results(self, results):
-        """Cập nhật kết quả nhận diện khuôn mặt"""
+        """Update recognition results (thread-safe) - KHÔNG LÀM GÌ CẢ"""
+        # Chỉ lưu results, không trigger UI update
         self.recognition_results = results
-
+    
     def add_event(self, name, is_real):
-        """Add recognition event with cooldown check and grid positioning"""
-        self.current_time = time.time()
-
+        """Add recognition event (thread-safe)"""
+        current_time = time.time()
+        
+        # Check cooldown
         if name in self.user_cooldowns:
-            last_time = self.user_cooldowns[name]
-            time_elapsed = self.current_time - last_time
-            if time_elapsed < self.cooldown_period:
-                return  # Cooldown active, skip
+            if current_time - self.user_cooldowns[name] < self.cooldown_period:
+                return
         
-        self.user_cooldowns[name] = self.current_time
-
-        label = name
-        status = "REAL" if is_real else "FAKE"
-        timestamp = self.current_time
+        self.user_cooldowns[name] = current_time
         
-        # Add the event to the beginning of the log
-        # This maintains most recent first order
-        self.event_log.insert(0, {"label": label, "status": status, "timestamp": timestamp})
+        # Add to event log
+        event = {
+            "label": name,
+            "status": "REAL" if is_real else "FAKE",
+            "timestamp": current_time
+        }
         
-        # Limit event log size to prevent memory growth over time
-        max_events = 100  # Reasonable upper bound
-        if len(self.event_log) > max_events:
-            self.event_log = self.event_log[:max_events]
+        self.event_log.insert(0, event)
         
-        # Process real faces for attendance
+        # Limit event log size
+        if len(self.event_log) > 100:
+            self.event_log = self.event_log[:100]
+        
+        # Process attendance for real faces
         if is_real and "FAKE" not in name and name != "Unknown":
             parts = name.split('_', 1)
-            # Check if first part is alphanumeric ID
             if len(parts) > 1 and parts[0].isalnum():
                 id_real = parts[0]
                 full_name = parts[1]
             else:
                 id_real = name
                 full_name = name
-                
+            
             print(f"✅ Sending attendance for ID: {id_real}, Name: {full_name}")
             self.api_client.mark_attendance(id_real, full_name)
-
-    def draw_recognition_results(self):
-        """Vẽ kết quả nhận diện khuôn mặt trên Pygame Surface"""
-        if not self.frame_surface or not self.recognition_results:
-            return
-
-        # Ensure frame surface exists before getting dimensions
-        if not self.frame_surface:
-            return
-        surface_width = self.frame_surface.get_width()
-        surface_height = self.frame_surface.get_height()
-
-        # Check for division by zero if original dimensions are somehow zero
-        if self.original_frame_width == 0 or self.original_frame_height == 0:
-            return
-
-        scale_x = surface_width / self.original_frame_width
-        scale_y = surface_height / self.original_frame_height
-
-        for result in self.recognition_results:
-            x1, y1, x2, y2 = result["box"]
-            # Ensure name is a string
-            # Use get with default, ensure string
-            name = str(result.get("name", "Unknown"))
-            confidence = result.get("confidence", 0.0)  # Use get with default
-            # Default to True if key missing
-            is_real = result.get("is_real", True)
-
-            x1_scaled = int(x1 * scale_x)
-            y1_scaled = int(y1 * scale_y)
-            x2_scaled = int(x2 * scale_x)
-            y2_scaled = int(y2 * scale_y)
-
-            color = (0, 255, 0) if is_real else (255, 0, 0)
-
-            pygame.draw.rect(self.frame_surface, color, (x1_scaled,
-                             y1_scaled, x2_scaled-x1_scaled, y2_scaled-y1_scaled), 2)
-
-            # Render text using the loaded (hopefully UTF-8) font
-            # Python 3 strings are unicode, just pass them to render
-            label = f"{name}: {confidence:.2f}"
-            text_surface = self.small_font.render(
-                label, True, color)  # Antialias = True
-            # Position text above the box, ensure it stays within bounds
-            # Small gap
-            text_y = max(0, y1_scaled - text_surface.get_height() - 2)
-            self.frame_surface.blit(text_surface, (x1_scaled, text_y))
-
-            if "spoof_score" in result:
-                score = result["spoof_score"]
-                spoof_label = f"Real: {score:.2f}" if is_real else f"FAKE: {score:.2f}"
-                spoof_text = self.small_font.render(spoof_label, True, color)
-                # Position below the box
-                text_y_spoof = min(
-                    surface_height - spoof_text.get_height(), y2_scaled + 5)
-                self.frame_surface.blit(spoof_text, (x1_scaled, text_y_spoof))
-
-    def draw_ui(self):
-        """Draw the complete user interface with grid layout for recognition events"""
-        # Make sure attendance status is processed before drawing UI
-        self.draw_attendance_status()  # <-- Add this line to update status_messages
         
-        self.window.fill(self.bg_color)
-        
-        # Draw camera frame on the left with proper alignment
-        if self.frame_surface:
-            # Draw recognition results on frame
-            self.draw_recognition_results() #Bỏ đi nếu cần
-            
-            # Calculate position to center the frame vertically
-            frame_width = self.frame_surface.get_width()
-            frame_height = self.frame_surface.get_height()
-            
-            x_pos = 10  # Left padding
-            y_pos = (self.height - frame_height) // 2  # Vertical centering
-            
-            # Draw background for the camera frame
-            pygame.draw.rect(self.window, (40, 40, 40), 
-                            (x_pos - 10, y_pos - 10, 
-                            frame_width + 20, frame_height + 20))
-            
-            # Display the frame at calculated position
-            self.window.blit(self.frame_surface, (x_pos, y_pos))
-        
-        # Draw the right panel with grid layout
-        panel_x = int(self.width * 0.68)
-        panel_y = 20
-        panel_width = self.width - panel_x - 20
-        panel_height = self.height - 40
-        
-        # Draw background for the right panel
-        pygame.draw.rect(self.window, (50, 50, 50), (panel_x - 20, panel_y, panel_width, panel_height))
-        
-        # Draw panel title
-        title = self.render_text("Recent Recognitions", self.font, (255, 255, 255))
-        self.window.blit(title, (panel_x, panel_y + 5))
-        
-        # Grid configuration
-        now = time.time()
-        grid_start_y = panel_y + 50
-        cell_width = panel_width // 2 - 10
-        cell_height = 75
-        max_rows = (panel_height - 50) // (cell_height + 5)
-        
-        # Filter event log to only show recent events
-        recent_events = [e for e in self.event_log if now - e["timestamp"] <= self.display_time]
-        
-        # Arrange events in a grid (2 columns)
-        for i, entry in enumerate(recent_events[:max_rows * 2]):  # Limit to what can fit
-            row = i // 2
-            col = i % 2
-            
-            # Calculate cell position
-            cell_x = panel_x + col * (cell_width + 10)
-            cell_y = grid_start_y + row * (cell_height + 5)
-            
-            # Draw cell background
-            status_color = (0, 100, 0) if entry["status"] == "REAL" else (100, 0, 0)
-            pygame.draw.rect(self.window, status_color, (cell_x, cell_y, cell_width, cell_height), border_radius=5)
-            pygame.draw.rect(self.window, (70, 70, 70), (cell_x, cell_y, cell_width, cell_height), 2, border_radius=5)
-            
-            # Draw person name
-            text_color = (255, 255, 255)
-            name_text = self.render_text(entry["label"], self.font, text_color)
-            self.window.blit(name_text, (cell_x + 10, cell_y + 10))
-            
-            # Draw recognition status
-            # status_text = self.render_text(entry["status"], self.small_font, text_color)
-            # self.window.blit(status_text, (cell_x + 10, cell_y + 40))
-            
-            # Get ID from label
-            parts = entry["label"].split('_', 1)
-            entry_id = parts[0] if len(parts) > 1 else entry["label"]
-            
-            # Draw attendance status if available
-            if hasattr(self, 'status_messages') and entry_id in self.status_messages:
-                status_info = self.status_messages[entry_id]
-                status_text = self.render_text(status_info["message"], self.small_font, text_color)
-                self.window.blit(status_text, (cell_x + 10, cell_y + cell_height - 25))
-            else:
-                # Show "Pending..." if real face but no attendance status yet
-                if entry["status"] == "REAL" and entry["label"] != "Unknown":
-                    pending_text = self.render_text("Đang xử lý...", self.small_font, (200, 200, 200))
-                    self.window.blit(pending_text, (cell_x + 10, cell_y + cell_height - 25))
-        
-        # Draw input interface if active
-        if self.input_active:
-            self.draw_text_input()
-        
-        # Update the display
-        pygame.display.update()
-
-    # handle_quit is integrated into handle_events now
-    def render_text(self, text, font, color):
-        """Safely render text with fallback for Vietnamese characters"""
-        try:
-            # Try to render with the current font
-            return font.render(text, True, color)
-        except Exception as e:
-            print(f"Error rendering text '{text}': {e}")
+        # Trigger UI update bằng cách gửi signal qua queue
+        if not self.event_queue.full():
             try:
-                # Try transliteration as fallback
-                ascii_text = self.transliterate_vietnamese(text)
-                return font.render(ascii_text, True, color)
-            except Exception as e2:
-                print(f"Fallback rendering also failed: {e2}")
-                # Last resort: return a minimal surface with basic text
-                return font.render("???", True, color)
-
-    def transliterate_vietnamese(self, text):
-        """Convert Vietnamese characters to ASCII equivalents"""
-        vietnamese_chars = 'ÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚÝàáâãèéêìíòóôõùúýĂăĐđĨĩŨũƠơƯưẠạẢảẤấẦầẨẩẪẫẬậẮắẰằẲẳẴẵẶặẸẹẺẻẼẽẾếỀềỂểỄễỆệỈỉỊịỌọỎỏỐốỒồỔổỖỗỘộỚớỜờỞởỠỡỢợỤụỦủỨứỪừỬửỮữỰự'
-        ascii_chars = 'AAAAEEEIIOOOOUUYaaaaeeeiioooouuyAaDdIiUuOoUuAaAaAaAaAaAaAaAaAaAaEeEeEeEeEeEeEeEeIiIiOoOoOoOoOoOoOoOoOoOoOoOoUuUuUuUuUuUuUu'
-        
-        result = ''
-        for char in text:
-            if char in vietnamese_chars:
-                idx = vietnamese_chars.index(char)
-                result += ascii_chars[idx]
-            else:
-                result += char
-        return result
-    def close(self):
-        """Close pygame and any resources"""
-        print("Closing UI and stopping API client...")
-        if self.api_client:
-            self.api_client.stop()
-        pygame.quit()
+                self.event_queue.put("new_event")
+            except:
+                pass
     
-    def process_event(self, event):
-        """Process pygame events specifically for the UI"""
-        if self.input_active:
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_RETURN:
-                    # Submit the text input
-                    if self.input_purpose == "add_face" and self.captured_frame is not None:
-                        # Pass reference to the face system
-                        self.finish_add_face()
-                    self.input_active = False
-                    self.input_text = ""
-                    self.input_purpose = None
-                elif event.key == pygame.K_BACKSPACE:
-                    self.input_text = self.input_text[:-1]
-                elif event.key == pygame.K_ESCAPE:
-                    # Cancel input
-                    self.input_active = False
-                    self.input_text = ""
-                    self.input_purpose = None
-                    self.captured_frame = None
-                else:
-                    # Add character to input text - proper UTF-8 handling
-                    if event.unicode:  # This handles unicode properly
-                        self.input_text += event.unicode
-            return True  # Event was handled by this method
-        return False  # Event was not handled by this method
-
-    def finish_add_face(self):
-        """Complete the face addition process"""
-        name = self.input_text.strip()
-        if name and self.captured_frame is not None:
-            if hasattr(self, 'face_recognition_system') and self.face_recognition_system:
-                print(f"Adding face: {name}")
-                success = self.face_recognition_system.add_face_to_database(self.captured_frame, name)
-                if success:
-                    self.add_status_message(name, "Face added successfully!")
-                else:
-                    self.add_status_message(name, "Failed to add face")
-            else:
-                print("Error: No face_recognition_system reference available")
-                self.add_status_message(name, "System error: Cannot add face")
-        self.captured_frame = None
-
-    def add_status_message(self, name, message):
-        """Add a status message to the UI"""
-        # Extract ID from name if possible
-        parts = name.split('_', 1)
-        if len(parts) > 1 and parts[0].isalnum():
-            id_real = parts[0]
-        else:
-            id_real = name
-            
+    # API callbacks
+    def on_attendance_success(self, attendance_data, response_data):
+        """Callback for successful attendance recording"""
+        id_real = attendance_data['id_real']
+        name = attendance_data['name']
+        
         self.attendance_status[id_real] = {
-            "status": "success" if "success" in message.lower() else "error",
-            "message": message,
+            "status": "success",
+            "message": f"✅ Recorded: {name}",
             "timestamp": time.time(),
             "name": name
         }
-
-    def start_face_input(self, frame):
-        """Initialize the text input for adding a face"""
-        self.input_active = True
-        self.input_text = ""
-        self.input_purpose = "add_face"
-        self.captured_frame = frame.copy()
-    def draw_text_input(self):
-        """Draw the text input interface"""
-        if not self.input_active:
-            return
-            
-        # Dim background
-        dim_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        dim_surface.fill((0, 0, 0, 180))  # Semi-transparent black
-        self.window.blit(dim_surface, (0, 0))
         
-        # Draw input box
-        pygame.draw.rect(self.window, self.input_color_active if self.input_active else self.input_color_inactive, self.input_rect, 2)
+        if not self.status_queue.full():
+            self.status_queue.put(f"✅ Attendance recorded: {name}")
         
-        # Draw input text
-        input_surface = self.font.render(self.input_text, True, (255, 255, 255))
-        self.window.blit(input_surface, (self.input_rect.x + 5, self.input_rect.y + 5))
+        # Trigger UI update
+        if not self.event_queue.full():
+            try:
+                self.event_queue.put("attendance_update")
+            except:
+                pass
+    
+    def on_attendance_error(self, attendance_data, error_msg):
+        """Callback for attendance recording error"""
+        id_real = attendance_data['id_real']
+        name = attendance_data['name']
         
-        # Draw purpose text
-        if self.input_purpose == "add_face":
-            purpose_text = self.font.render("Enter name for the face (format: ID_Name):", True, (255, 255, 255))
-            self.window.blit(purpose_text, (self.input_rect.x, self.input_rect.y - 40))
-            
-            # Draw instruction text
-            instruction_text = self.font.render("Press ENTER to confirm, ESC to cancel", True, (200, 200, 200))
-            self.window.blit(instruction_text, (self.input_rect.x, self.input_rect.y + 50))
-            
-            # Show preview of captured face if available
-            if self.captured_frame is not None and hasattr(self, 'face_recognition_system'):
-                # Process the frame to show the detected face
-                results = self.face_recognition_system.process_image(self.captured_frame)
-                if results:
-                    # Extract and display the face
-                    x1, y1, x2, y2 = results[0]["box"]
-                    face_img = self.captured_frame[y1:y2, x1:x2]
-                    face_img = cv2.resize(face_img, (120, 120))
-                    face_rgb = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
-                    face_surface = pygame.surfarray.make_surface(face_rgb.swapaxes(0, 1))
-                    self.window.blit(face_surface, (self.input_rect.x - 140, self.input_rect.y - 40))
+        self.attendance_status[id_real] = {
+            "status": "error",
+            "message": f"❌ Failed: {name}",
+            "timestamp": time.time(),
+            "name": name
+        }
+        
+        if not self.status_queue.full():
+            self.status_queue.put(f"❌ Attendance failed: {name}")
+        
+        # Trigger UI update
+        if not self.event_queue.full():
+            try:
+                self.event_queue.put("attendance_update")
+            except:
+                pass
+    
+    def should_quit(self):
+        """Check if quit was requested"""
+        return self.quit_requested
+    
+    def _on_closing(self):
+        """Handle window closing"""
+        self.quit_requested = True
+        self.ui_thread_running = False
+        
+        # Stop API client
+        if self.api_client:
+            self.api_client.stop()
+        
+        # Wait for UI thread to finish
+        if self.ui_update_thread.is_alive():
+            self.ui_update_thread.join(timeout=1.0)
+        
+        # Destroy window
+        self.root.quit()
+        self.root.destroy()
+    
+    def run(self):
+        """Start the UI main loop"""
+        try:
+            self.root.mainloop()
+        except Exception as e:
+            print(f"UI error: {e}")
+            self._on_closing()
+    
+    def close(self):
+        """Close the UI"""
+        self._on_closing()
