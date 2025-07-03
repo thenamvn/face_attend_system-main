@@ -5,7 +5,7 @@ import time
 import threading
 from queue import Queue, Empty
 from api.AttendanceAPIClient import AttendanceAPIClient
-
+import platform
 
 class FaceRecognitionTkinterUI:
     def __init__(self, width=1280, height=720):
@@ -20,7 +20,17 @@ class FaceRecognitionTkinterUI:
         self.root = ctk.CTk()
         self.root.title("Face Recognition System - Hệ thống nhận diện khuôn mặt")
         self.root.geometry(f"{width}x{height}")
-        self.root.state('zoomed')  # Fullscreen on Windows
+                # Fullscreen handling based on OS
+        try:
+            if platform.system() == "Windows":
+                self.root.state('zoomed')  # Fullscreen on Windows
+            else:
+                # Linux/Raspberry Pi - maximize window
+                self.root.attributes('-zoomed', True)
+        except:
+            # Fallback - just center the window
+            self.root.geometry(f"{width}x{height}+50+50")
+            print("Note: Running in windowed mode")
         
         # Thread-safe queues for UI updates
         self.frame_queue = Queue(maxsize=2)
