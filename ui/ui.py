@@ -291,6 +291,15 @@ class FaceRecognitionTkinterUI:
     def _update_event_widget(self, widget, event):
         """Update existing event widget with new data"""
         try:
+            # LUÔN UPDATE ATTENDANCE STATUS cho widget hiện có
+            parts = event["label"].split('_', 1)
+            entry_id = parts[0] if len(parts) > 1 else event["label"]
+            
+            # Update attendance status NGAY LẬP TỨC
+            if hasattr(widget, 'attendance_label'):
+                self._update_attendance_status(widget.attendance_label, entry_id, event)
+            
+            # Update other info only if event data changed
             if hasattr(widget, 'event_data') and widget.event_data != event:
                 # Update name label
                 name_color = "green" if event["status"] == "REAL" else "red"
@@ -301,13 +310,9 @@ class FaceRecognitionTkinterUI:
                 status_text = f"{event['status']} - {time_str}"
                 widget.status_label.configure(text=status_text)
                 
-                # Update attendance status
-                parts = event["label"].split('_', 1)
-                entry_id = parts[0] if len(parts) > 1 else event["label"]
-                self._update_attendance_status(widget.attendance_label, entry_id, event)
-                
                 # Store new event data
                 widget.event_data = event
+                
         except Exception as e:
             print(f"Error updating event widget: {e}")
     
@@ -449,12 +454,13 @@ class FaceRecognitionTkinterUI:
         if not self.status_queue.full():
             self.status_queue.put(f"✅ Attendance recorded: {name}")
         
-        # Trigger UI update
-        if not self.event_queue.full():
-            try:
-                self.event_queue.put("attendance_update")
-            except:
-                pass
+        # # Trigger UI update
+        # if not self.event_queue.full():
+        #     try:
+        #         self.event_queue.put("attendance_update")
+        #     except:
+        #         pass
+        self.root.after(0, self._update_recognition_display)
     
     def on_attendance_error(self, attendance_data, error_msg):
         """Callback for attendance recording error"""
@@ -471,12 +477,13 @@ class FaceRecognitionTkinterUI:
         if not self.status_queue.full():
             self.status_queue.put(f"❌ Attendance failed: {name}")
         
-        # Trigger UI update
-        if not self.event_queue.full():
-            try:
-                self.event_queue.put("attendance_update")
-            except:
-                pass
+        # # Trigger UI update
+        # if not self.event_queue.full():
+        #     try:
+        #         self.event_queue.put("attendance_update")
+        #     except:
+        #         pass
+        self.root.after(0, self._update_recognition_display)
     
     def should_quit(self):
         """Check if quit was requested"""
