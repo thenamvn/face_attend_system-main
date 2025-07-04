@@ -147,40 +147,40 @@ class FaceRecognitionTkinterUI:
         """Main UI update loop running in separate thread"""
         while self.ui_thread_running:
             try:
+                # Check if main loop is running before updating
+                if not self.root.winfo_exists():
+                    continue
+                    
                 # Update frame
                 try:
-                    frame_data = self.frame_queue.get_nowait()
-                    self._update_camera_display(frame_data)
+                    frame = self.frame_queue.get_nowait()
+                    self._update_camera_display(frame)
                 except Empty:
                     pass
                 
-                # Update events (chỉ khi có event mới)
-                has_new_events = False
+                # Update events
                 try:
-                    while True:  # Process all pending events
-                        event_data = self.event_queue.get_nowait()
-                        has_new_events = True
+                    event = self.event_queue.get_nowait()
+                    current_time = time.time()
+                    # Only update if enough time has passed
+                    if current_time - self.last_event_update > self.event_update_interval:
+                        self._update_recognition_display()
+                        self.last_event_update = current_time
                 except Empty:
                     pass
                 
-                # Chỉ update display khi có events mới HOẶC đã qua interval
-                current_time = time.time()
-                if has_new_events or (current_time - self.last_event_update) > self.event_update_interval:
-                    self._update_recognition_display()
-                    self.last_event_update = current_time
-                
-                # Update status messages
+                # Update status
                 try:
-                    status_data = self.status_queue.get_nowait()
-                    self._update_status_display(status_data)
+                    status = self.status_queue.get_nowait()
+                    self._update_status_display(status)
                 except Empty:
                     pass
-                
-                # Schedule next update
-                time.sleep(0.1)  # Giảm tần suất update từ 0.033 xuống 0.1
+                    
+                time.sleep(0.1)  # Prevent high CPU usage
                 
             except Exception as e:
-                print(f"UI update error: {e}")
+                if "main thread is not in main loop" not in str(e):
+                    print(f"UI update error: {e}")
                 time.sleep(0.1)
     
     def _update_camera_display(self, frame):
@@ -202,10 +202,18 @@ class FaceRecognitionTkinterUI:
             
             # Update label (must be done in main thread)
             def update_label():
-                self.camera_label.configure(image=photo, text="")
-                self.camera_label.image = photo  # Keep a reference
+                try:
+                    if self.root.winfo_exists():
+                        self.camera_label.configure(image=photo, text="")
+                        self.camera_label.image = photo  # Keep a reference
+                except Exception:
+                    pass  # Ignore if window is closed
             
-            self.root.after(0, update_label)
+            # Only schedule update if main loop is running
+            try:
+                self.root.after(0, update_label)
+            except RuntimeError:
+                pass  # Main loop not running yet
             
         except Exception as e:
             print(f"Camera display update error: {e}")
