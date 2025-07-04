@@ -10,7 +10,7 @@ from verifier.face_verifier import FaceVerifier
 from database.face_database_manager import FaceDatabaseManager
 from antispoof.Fasnet import Fasnet
 from thread.thread import VideoCaptureThread
-from ui.ui import FaceRecognitionTkinterUI
+from ui.ui_timecard import TimeCardUI
 from mail.SpoofAlertManager import SpoofAlertManager
 import numpy as np
 import time
@@ -146,71 +146,6 @@ class FaceRecognitionSystem:
         
         return results
 
-    def add_face_with_augmentation(self, image, name):
-        """Thêm khuôn mặt vào cơ sở dữ liệu với các phiên bản tăng cường"""
-        results = self.process_image(image)
-        if not results:
-            print("❌ Không phát hiện được khuôn mặt")
-            return False
-        
-        # Lấy embedding ban đầu
-        embedding = results[0]["embedding"]
-        self.face_db[name] = embedding
-        
-        # Trích xuất khuôn mặt
-        x1, y1, x2, y2 = results[0]["box"]
-        face = image[y1:y2, x1:x2]
-        
-        # Tạo các phiên bản tăng cường mô phỏng các góc nghiêng khác nhau
-        augmented_images = []
-        
-        # Mô phỏng nhìn xuống bằng cách dịch hộp vùng cắt lên trên
-        shift_down = int((y2 - y1) * 0.15)  # Dịch 15%
-        if y1 - shift_down >= 0:
-            down_face = image[y1-shift_down:y2-shift_down, x1:x2]
-            augmented_images.append(("down", down_face))
-        
-        # Mô phỏng nhìn lên bằng cách dịch hộp vùng cắt xuống dưới
-        shift_up = int((y2 - y1) * 0.15)
-        if y2 + shift_up < image.shape[0]:
-            up_face = image[y1+shift_up:y2+shift_up, x1:x2]
-            augmented_images.append(("up", up_face))
-        
-        # Xử lý các hình ảnh đã tăng cường
-        for pose_type, aug_face in augmented_images:
-            # Thay đổi kích thước nếu cần
-            if aug_face.shape[:2] != (y2-y1, x2-x1):
-                aug_face = cv2.resize(aug_face, (x2-x1, y2-y1))
-                
-            # Xử lý khuôn mặt tăng cường này
-            try:
-                # Phát hiện landmarks
-                landmarks = self.aligner.get_five_landmarks(aug_face, (0, 0, aug_face.shape[1], aug_face.shape[0]))
-                if landmarks is None:
-                    continue
-                    
-                # Căn chỉnh và xử lý
-                aligned_face = self.aligner.align_face(aug_face, landmarks)
-                if aligned_face is None:
-                    continue
-                    
-                # Chuẩn hóa và tạo embedding
-                norm_face = normalize_face(aligned_face)
-                aug_embedding = self.embedder.get_embedding(norm_face)
-                
-                # Thêm vào cơ sở dữ liệu
-                aug_name = f"{name}_{pose_type}"
-                self.face_db[aug_name] = aug_embedding
-                print(f"✅ Đã thêm phiên bản {pose_type} cho '{name}'")
-            except Exception as e:
-                print(f"⚠️ Lỗi khi xử lý biến thể {pose_type}: {str(e)}")
-        
-        # Lưu cơ sở dữ liệu đã cập nhật
-        self.db_manager.face_db = self.face_db
-        self.db_manager._save_backup()
-        print(f"✅ Đã thêm khuôn mặt '{name}' vào cơ sở dữ liệu với các biến thể góc nhìn")
-        return True
-
     def add_face_to_database(self, image, name):
         results = self.process_image(image)
         if results:
@@ -243,111 +178,13 @@ class FaceRecognitionSystem:
             return success
         return False
 
-class MotionController:
-    """Motion controller using gpiozero's event-driven approach"""
-    def __init__(self, pin=14, cooldown=5):
-        """
-        Initialize motion controller
-        
-        Args:
-            pin: GPIO pin for PIR sensor
-            cooldown: Seconds to wait after motion before going to standby
-        """
-        self.motion_active = False
-        self.callback_fn = None
-        self.cooldown_timer = None
-        self.pin = pin
-        self.cooldown = cooldown
-        global GPIO_AVAILABLE
-        
-        if GPIO_AVAILABLE:
-            try:
-                self.pir = MotionSensor(self.pin)
-                print(f"✅ PIR sensor initialized on GPIO pin {self.pin}")
-                
-                # Set up event handlers
-                self.pir.when_motion = self._on_motion
-                self.pir.when_no_motion = self._on_no_motion
-                
-                # Initial state
-                if self.pir.motion_detected:
-                    self.motion_active = True
-            except Exception as e:
-                print(f"❌ Failed to initialize PIR sensor: {str(e)}")
-                self.pir = None
-                GPIO_AVAILABLE = False
-        else:
-            self.pir = None
-            self.motion_active = True  # Always active without PIR
-    
-    def register_callback(self, callback_fn):
-        """Register callback function to be called when motion state changes"""
-        self.callback_fn = callback_fn
-    
-    def _on_motion(self):
-        """Called when motion is detected"""
-        print("🔍 Motion detected!")
-        
-        # Cancel any pending cooldown timer
-        if self.cooldown_timer:
-            self.cooldown_timer.cancel()
-            self.cooldown_timer = None
-        
-        # Only notify if state changes
-        if not self.motion_active:
-            self.motion_active = True
-            if self.callback_fn:
-                self.callback_fn(True)
-    
-    def _on_no_motion(self):
-        """Called when motion stops"""
-        print(f"⏳ No motion detected - waiting {self.cooldown}s before standby")
-        
-        # Start cooldown timer
-        if self.cooldown_timer:
-            self.cooldown_timer.cancel()
-        
-        self.cooldown_timer = threading.Timer(self.cooldown, self._enter_standby)
-        self.cooldown_timer.daemon = True
-        self.cooldown_timer.start()
-    
-    def _enter_standby(self):
-        """Enter standby mode after cooldown period"""
-        print("💤 Entering standby mode")
-        self.motion_active = False
-        if self.callback_fn:
-            self.callback_fn(False)
-    
-    def is_active(self):
-        """Return current motion status"""
-        if not GPIO_AVAILABLE:
-            return True
-        return self.motion_active
-    
-    def force_active(self, state):
-        """Force motion active state (for manual override)"""
-        if state != self.motion_active:
-            self.motion_active = state
-            if self.callback_fn:
-                self.callback_fn(state)
-            
-            # Cancel any pending cooldown timer
-            if state and self.cooldown_timer:
-                self.cooldown_timer.cancel()
-                self.cooldown_timer = None
-    
-    def cleanup(self):
-        """Clean up resources"""
-        if self.cooldown_timer:
-            self.cooldown_timer.cancel()
-
 def draw_results_on_frame(image, results):
     """Draw bounding boxes and names on the image"""
     for result in results:
         x1, y1, x2, y2 = result["box"]
         name = result["name"]
         confidence = result["confidence"]
-        is_real = result.get("is_real", True)  # Default to True if not available
+        is_real = result.get("is_real", True)
         
         # Choose color based on whether face is real or spoofed
         color = (0, 255, 0) if is_real else (0, 0, 255)  # Green for real, Red for fake
@@ -368,32 +205,21 @@ def draw_results_on_frame(image, results):
     
     return image
 
-def webcam_demo():
-    """Demo face recognition using webcam with customtkinter UI"""
-    print("Initializing face recognition system...")
+def timecard_demo():
+    """Time card style demo with fullscreen UI"""
+    print("Initializing face recognition time card system...")
     face_system = FaceRecognitionSystem()
-    print("System initialized! Opening webcam...")
+    print("System initialized!")
     
-    # Initialize UI
-    ui = FaceRecognitionTkinterUI()
+    # Initialize UI - giống máy chấm công
+    ui = TimeCardUI()
     ui.face_recognition_system = face_system
     
     # Open webcam
     cap = VideoCaptureThread().start()
-    print("Webcam opened successfully!")
+    print("Camera started successfully!")
     
-    # Initialize variables
-    last_frame = None
-    
-    # Create standby frame
-    blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-    cv2.putText(blank_frame, "Waiting for faces...", (80, 240), 
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    
-    # Initialize motion controller
-    motion_controller = MotionController(pin=14, cooldown=0)
-
-    # Initialize mail alert system
+    # Initialize spoof alert
     spoof_alert = SpoofAlertManager(
         email_sender=os.getenv("EMAIL_SENDER"),
         email_password=os.getenv("EMAIL_PASSWORD"),
@@ -402,132 +228,75 @@ def webcam_demo():
         cooldown_period=60
     )
     
-    # Motion callback function
-    def on_motion_change(is_active):
-        nonlocal last_frame
-        if is_active:
-            print("🔄 System resuming active processing")
-        else:
-            print("🛑 System entering low-power standby")
-            # Save the last good frame when entering standby
-            if cap is not None:
-                last_frame = cap.read().copy()
-            # Clear recognition results when entering standby
-            ui.update_recognition_results([])
+    # Face recognition cooldown
+    face_cooldowns = {}
+    cooldown_period = 5  # seconds between recognitions for same person
     
-    # Register callback
-    motion_controller.register_callback(on_motion_change)
-    
-    # Main processing loop in separate thread
+    # Processing loop
     def processing_loop():
         while not ui.should_quit():
             try:
-                # Check motion state
-                active_mode = motion_controller.is_active()
-                
-                # If standby, display standby screen and skip heavy processing
-                if not active_mode:
-                    # KHÔNG gọi update_recognition_results ở đây nữa
-                    ui.update_frame(blank_frame)
-                    time.sleep(0.1)  # Longer delay in standby
-                    continue
-                
-                # Get current frame from camera
                 frame = cap.read()
                 if frame is None:
                     time.sleep(0.033)
                     continue
                 
-                # Save frame for other processing
-                last_frame = frame.copy()
-                
-                # Process frame with face recognition system
+                # Process frame
                 results = face_system.process_image(frame)
                 
-                # Update spoof alert system
+                # Update spoof alert
                 spoof_alert.update(results, frame)
-
-                # CHỈ update recognition results khi có kết quả mới
-                if results:
-                    ui.update_recognition_results(results)
                 
-                # Process face recognition events - CHỈ KHI CÓ FACES THẬT
+                # Process recognition events
+                current_time = time.time()
                 for res in results:
-                    is_real = res.get("is_real", True)
                     name = res["name"]
-                    if name != "Unknown" and is_real:
+                    is_real = res.get("is_real", True)
+                    
+                    # Only process real, known faces
+                    if is_real and name != "Unknown" and "FAKE" not in name:
+                        # Check cooldown
+                        if name in face_cooldowns:
+                            if current_time - face_cooldowns[name] < cooldown_period:
+                                continue
+                        
+                        face_cooldowns[name] = current_time
+                        
+                        # Add event to UI (will trigger info screen)
                         ui.add_event(name, is_real)
                 
-                # Draw results on frame
+                # Draw recognition results on frame
                 display_frame = draw_results_on_frame(frame.copy(), results)
                 
-                # Update frame in UI
+                # Update camera display
                 ui.update_frame(display_frame)
                 
-                # Small delay to prevent CPU hogging
                 time.sleep(0.033)  # ~30 FPS
                 
             except Exception as e:
-                print(f"Processing loop error: {e}")
+                print(f"Processing error: {e}")
                 time.sleep(0.1)
     
     # Start processing thread
     processing_thread = threading.Thread(target=processing_loop, daemon=True)
     processing_thread.start()
     
-    # Print instructions
-    print("\n--- CONTROLS ---")
-    print("Press 'A' key or click button to add a face to the database")
-    print("Close window to exit")
-    print("--------------\n")
+    print("\n--- TIME CARD SYSTEM STARTED ---")
+    print("Press 'A' to add a face")
+    print("Press 'Escape' to exit")
+    print("Look at the camera to check in/out")
+    print("--------------------------------\n")
     
     try:
-        # Run UI main loop
+        # Run UI
         ui.run()
     except KeyboardInterrupt:
         print("Interrupted by user")
     finally:
-        # Clean up
         print("Cleaning up...")
-        motion_controller.cleanup()
         cap.stop()
         ui.close()
         spoof_alert.stop()
 
-def image_demo(image_path):
-    """Demo face recognition on a single image"""
-    print(f"Processing image: {image_path}")
-    face_system = FaceRecognitionSystem()
-    
-    # Load image
-    image = cv2.imread(image_path)
-    if image is None:
-        print(f"Failed to load image: {image_path}")
-        return
-    
-    print("Processing image...")
-    results = face_system.process_image(image)
-    print(f"Found {len(results)} faces")
-    
-    # Draw results
-    display_image = draw_results_on_frame(image.copy(), results)
-    
-    # Display results
-    cv2.imshow('Face Recognition', display_image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
 if __name__ == "__main__":
-    import sys
-    
-    try:
-        if len(sys.argv) > 1:
-            # Process image file provided as argument
-            image_demo(sys.argv[1])
-        else:
-            # Run webcam demo
-            webcam_demo()
-    except Exception as e:
-        print(f"Error: {str(e)}")
-        import traceback
-        traceback.print_exc()
+    timecard_demo()
