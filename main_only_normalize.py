@@ -411,7 +411,11 @@ def webcam_demo():
             print("🛑 System entering low-power standby")
             # Save the last good frame when entering standby
             if cap is not None:
-                last_frame = cap.read().copy()
+                frame = cap.read()
+                if frame is not None:  # Add this null check
+                    last_frame = frame.copy()
+                else:
+                    print("⚠️ Could not capture frame for standby")
             # Clear recognition results when entering standby
             ui.update_recognition_results([])
     
