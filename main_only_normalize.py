@@ -378,7 +378,7 @@ def webcam_demo():
     ui = FaceRecognitionTkinterUI()
     ui.face_recognition_system = face_system
     
-    # Open webcam
+    # KHỞI TẠO cap TRƯỚC KHI SỬ DỤNG
     cap = VideoCaptureThread().start()
     print("Webcam opened successfully!")
     
@@ -404,22 +404,31 @@ def webcam_demo():
     
     # Motion callback function
     def on_motion_change(is_active):
-        nonlocal last_frame, cap
+        nonlocal last_frame, cap  # Đảm bảo cap được khai báo nonlocal
         if is_active:
             if cap is None:
-                cap = VideoCaptureThread().start()
+                try:
+                    cap = VideoCaptureThread().start()
+                    print("🔄 Camera restarted for active processing")
+                except Exception as e:
+                    print(f"❌ Failed to restart camera: {e}")
+                    cap = None
             print("🔄 System resuming active processing")
         else:
             print("🛑 System entering low-power standby")
             # Save the last good frame when entering standby
             if cap is not None:
-                frame = cap.read()
-                if frame is not None:  # Add this null check
-                    last_frame = frame.copy()
-                else:
-                    print("⚠️ Could not capture frame for standby")
-                cap.stop()
-                cap = None
+                try:
+                    frame = cap.read()
+                    if frame is not None:
+                        last_frame = frame.copy()
+                    else:
+                        print("⚠️ Could not capture frame for standby")
+                    cap.stop()
+                except Exception as e:
+                    print(f"⚠️ Error stopping camera: {e}")
+                finally:
+                    cap = None
             # Clear recognition results when entering standby
             ui.update_recognition_results([])
     
@@ -428,55 +437,76 @@ def webcam_demo():
     
     # Main processing loop in separate thread
     def processing_loop():
+        nonlocal cap, last_frame
+        frame_count = 0
+        
         while not ui.should_quit():
             try:
                 # Check motion state
                 active_mode = motion_controller.is_active()
                 
-                # If standby, display standby screen and skip heavy processing
                 if not active_mode:
-                    # KHÔNG gọi update_recognition_results ở đây nữa
                     ui.update_frame(blank_frame)
-                    time.sleep(0.1)  # Longer delay in standby
+                    time.sleep(0.1)
                     continue
                 
-                # Get current frame from camera
-                frame = cap.read()
-                if frame is None:
-                    time.sleep(0.033)
+                # Camera handling with better error recovery
+                if cap is None:
+                    print("⚠️ Camera not available, restarting...")
+                    try:
+                        cap = VideoCaptureThread().start()
+                        time.sleep(0.5)
+                        continue
+                    except Exception as e:
+                        print(f"❌ Camera restart failed: {e}")
+                        time.sleep(2)
+                        continue
+                
+                # Get frame with less verbose logging
+                try:
+                    frame = cap.read()
+                    if frame is None:
+                        if frame_count % 30 == 0:  # Only log every 30 frames
+                            print("⚠️ No frame received from camera")
+                        time.sleep(0.033)
+                        frame_count += 1
+                        continue
+                except Exception as e:
+                    print(f"❌ Frame read error: {e}")
+                    # Restart camera on read error
+                    try:
+                        cap.stop()
+                    except:
+                        pass
+                    cap = None
                     continue
                 
-                # Save frame for other processing
+                frame_count = 0  # Reset frame count on successful read
                 last_frame = frame.copy()
                 
                 # Process frame with face recognition system
                 results = face_system.process_image(frame)
                 
-                # Update spoof alert system
+                # Update spoof alert system (THIẾU PHẦN NÀY)
                 spoof_alert.update(results, frame)
-
-                # CHỈ update recognition results khi có kết quả mới
-                if results:
-                    ui.update_recognition_results(results)
                 
-                # Process face recognition events - CHỈ KHI CÓ FACES THẬT
+                # UPDATE UI TRƯỚC KHI PROCESS EVENTS để card có face image
+                ui.update_frame(frame)  # Gửi frame trước
+                ui.update_recognition_results(results)  # Sau đó update results
+                
+                # Process events sau khi UI đã được update
                 for res in results:
                     is_real = res.get("is_real", True)
                     name = res["name"]
                     if name != "Unknown" and is_real:
                         ui.add_event(name, is_real)
                 
-                # Draw results on frame
-                display_frame = draw_results_on_frame(frame.copy(), results)
-                
-                # Update frame in UI
-                ui.update_frame(display_frame)
-                
-                # Small delay to prevent CPU hogging
                 time.sleep(0.033)  # ~30 FPS
                 
             except Exception as e:
-                print(f"Processing loop error: {e}")
+                print(f"Processing error: {e}")
+                import traceback  # THIẾU PHẦN NÀY
+                traceback.print_exc()
                 time.sleep(0.1)
     
     # Start processing thread
@@ -498,7 +528,11 @@ def webcam_demo():
         # Clean up
         print("Cleaning up...")
         motion_controller.cleanup()
-        cap.stop()
+        if cap is not None:
+            try:
+                cap.stop()
+            except Exception as e:
+                print(f"Error stopping camera during cleanup: {e}")
         ui.close()
         spoof_alert.stop()
 

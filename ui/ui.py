@@ -1,14 +1,15 @@
-import customtkinter as ctk
 import cv2
+import customtkinter as ctk
+import tkinter as tk
 from PIL import Image, ImageTk
-import time
 import threading
+import time
+import numpy as np
 from queue import Queue, Empty
 from api.AttendanceAPIClient import AttendanceAPIClient
-import platform
 
 class FaceRecognitionTkinterUI:
-    def __init__(self, width=1280, height=720):
+    def __init__(self, width=752, height=433):
         # Set appearance mode and color theme
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
@@ -18,38 +19,28 @@ class FaceRecognitionTkinterUI:
         
         # Initialize main window
         self.root = ctk.CTk()
-        self.root.title("Face Recognition System - Hệ thống nhận diện khuôn mặt")
+        self.root.title("Face Recognition")
         self.root.geometry(f"{width}x{height}")
-                # Fullscreen handling based on OS
-        try:
-            if platform.system() == "Windows":
-                self.root.state('zoomed')  # Fullscreen on Windows
-            else:
-                # Linux/Raspberry Pi - maximize window
-                self.root.attributes('-zoomed', True)
-        except:
-            # Fallback - just center the window
-            self.root.geometry(f"{width}x{height}+50+50")
-            print("Note: Running in windowed mode")
+        self.root.resizable(False, False)
         
         # Thread-safe queues for UI updates
         self.frame_queue = Queue(maxsize=2)
-        self.event_queue = Queue(maxsize=20)  # Chỉ queue events thôi, không queue results
-        self.status_queue = Queue(maxsize=20)
         
         # UI state variables
         self.current_frame = None
         self.recognition_results = []
-        self.event_log = []
-        self.attendance_status = {}
         self.user_cooldowns = {}
-        self.display_time = 10
-        self.cooldown_period = 10
+        self.cooldown_period = 30
         
-        # Event widgets cache để tránh recreate
-        self.event_widgets = {}
-        self.last_event_update = 0
-        self.event_update_interval = 1.0  # Chỉ update events mỗi 1 giây
+        # SIMPLIFIED: Card tracking variables
+        self.active_face_card = None
+        self.current_face_id = None
+        self.card_display_time = 5.0  # 3 seconds display time
+        self.card_creation_lock = threading.Lock()
+        
+        # Attendance tracking
+        self.attendance_sent = {}
+        self.attendance_reset_time = 300  # 5 minutes
         
         # Face recognition system reference
         self.face_recognition_system = None
@@ -75,312 +66,373 @@ class FaceRecognitionTkinterUI:
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
         
     def _setup_ui(self):
-        """Setup the main UI layout"""
-        # Configure grid weights
-        self.root.grid_columnconfigure(0, weight=2)  # Camera frame
-        self.root.grid_columnconfigure(1, weight=1)  # Right panel
+        """Setup UI matching PyQt design"""
+        # Configure main grid
+        self.root.grid_columnconfigure(0, weight=3)
+        self.root.grid_columnconfigure(1, weight=1)
         self.root.grid_rowconfigure(0, weight=1)
         
-        # Left frame for camera
-        self.camera_frame = ctk.CTkFrame(self.root)
-        self.camera_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
-        self.camera_frame.grid_rowconfigure(0, weight=1)
+        # Camera frame (left side)
+        self.camera_frame = ctk.CTkFrame(
+            self.root, 
+            fg_color="#1a1a1a",
+            corner_radius=20
+        )
+        self.camera_frame.grid(row=0, column=0, padx=16, pady=32, sticky="nsew")
         self.camera_frame.grid_columnconfigure(0, weight=1)
+        self.camera_frame.grid_rowconfigure(0, weight=1)
         
-        # Camera display label
+        # Camera display
         self.camera_label = ctk.CTkLabel(
-            self.camera_frame, 
+            self.camera_frame,
             text="Waiting for camera...",
-            font=ctk.CTkFont(size=20)
+            font=ctk.CTkFont(size=16),
+            text_color="white"
         )
         self.camera_label.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
         
-        # Right frame for recognition results
-        self.right_frame = ctk.CTkFrame(self.root)
-        self.right_frame.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
-        self.right_frame.grid_columnconfigure(0, weight=1)
-        
-        # Title for recognition panel
-        self.recognition_title = ctk.CTkLabel(
-            self.right_frame,
-            text="Recent Recognitions",
-            font=ctk.CTkFont(size=18, weight="bold")
+        # ID GroupBox (right side)
+        self.id_group = ctk.CTkFrame(
+            self.root,
+            fg_color="#2b2b2b",
+            corner_radius=10,
+            width=211,
+            height=361
         )
-        self.recognition_title.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
+        self.id_group.grid(row=0, column=1, padx=(0, 16), pady=32, sticky="nsew")
+        self.id_group.grid_propagate(False)
         
-        # Scrollable frame for recognition events
-        self.scrollable_frame = ctk.CTkScrollableFrame(self.right_frame)
-        self.scrollable_frame.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="nsew")
-        self.right_frame.grid_rowconfigure(1, weight=1)
-        
-        # Control buttons frame
-        self.control_frame = ctk.CTkFrame(self.right_frame)
-        self.control_frame.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
-        
-        # Add face button
-        self.add_face_btn = ctk.CTkButton(
-            self.control_frame,
-            text="Add Face (A)",
-            command=self._add_face_dialog,
-            font=ctk.CTkFont(size=14)
+        # ID title
+        self.id_title = ctk.CTkLabel(
+            self.id_group,
+            text="ID",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color="white"
         )
-        self.add_face_btn.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        self.id_title.place(x=10, y=5)
+        
+        # Avatar image area
+        self.avatar_frame = ctk.CTkFrame(
+            self.id_group,
+            fg_color="#3a3a3a",
+            corner_radius=20,
+            width=131,
+            height=141
+        )
+        self.avatar_frame.place(x=40, y=30)
+        self.avatar_frame.pack_propagate(False)
+        
+        # Avatar image label
+        self.avatar_label = ctk.CTkLabel(
+            self.avatar_frame,
+            text="👤",
+            font=ctk.CTkFont(size=40),
+            text_color="#888888",
+            width=131,
+            height=141
+        )
+        self.avatar_label.pack(expand=True, fill="both")
+        
+        # Name field
+        self.name_entry = ctk.CTkEntry(
+            self.id_group,
+            placeholder_text="Họ và tên",
+            font=ctk.CTkFont(size=12),
+            corner_radius=10,
+            width=171,
+            height=31,
+            justify="center",
+            state="readonly"
+        )
+        self.name_entry.place(x=20, y=199)
+        
+        # ID field
+        self.id_entry = ctk.CTkEntry(
+            self.id_group,
+            placeholder_text="Mã sinh viên",
+            font=ctk.CTkFont(size=12),
+            corner_radius=10,
+            width=171,
+            height=31,
+            justify="center",
+            state="readonly"
+        )
+        self.id_entry.place(x=20, y=259)
         
         # Status label
-        self.status_label = ctk.CTkLabel(
-            self.control_frame,
-            text="System Ready",
-            font=ctk.CTkFont(size=12)
+        self.status_display = ctk.CTkLabel(
+            self.id_group,
+            text="Spoof Status",
+            font=ctk.CTkFont(size=10),
+            text_color="white",
+            fg_color="#3a3a3a",
+            width=81,
+            height=41,
+            corner_radius=5
         )
-        self.status_label.grid(row=1, column=0, padx=5, pady=5, sticky="ew")
+        self.status_display.place(x=70, y=300)
         
-        # Configure control frame
-        self.control_frame.grid_columnconfigure(0, weight=1)
+        # Add Face button
+        self.add_face_button = ctk.CTkButton(
+            self.root,
+            text="Add Face (A)",
+            command=self._add_face_dialog,
+            font=ctk.CTkFont(size=12),
+            width=100,
+            height=30
+        )
+        self.add_face_button.place(x=10, y=10)
         
-        # Bind keyboard events
-        self.root.bind('<KeyPress-a>', lambda e: self._add_face_dialog())
-        self.root.bind('<KeyPress-A>', lambda e: self._add_face_dialog())
-        self.root.bind('<Escape>', lambda e: self._on_closing())
-        self.root.focus_set()  # Enable keyboard focus
-        
+    def _create_id_card(self, person_name, face_data, face_image=None):
+        """Create/Update ID card with attendance status logic"""
+        with self.card_creation_lock:
+            try:
+                # Extract info
+                parts = person_name.split('_', 1)
+                if len(parts) > 1:
+                    id_real = parts[0]
+                    full_name = parts[1]
+                else:
+                    id_real = person_name
+                    full_name = face_data.get("full_name", person_name)
+                
+                # Update avatar image
+                if face_image is not None:
+                    self._update_avatar_image(face_image)
+                
+                # Update text fields
+                self.name_entry.configure(state="normal")
+                self.name_entry.delete(0, "end")
+                self.name_entry.insert(0, full_name)
+                self.name_entry.configure(state="readonly")
+                
+                self.id_entry.configure(state="normal")
+                self.id_entry.delete(0, "end")
+                self.id_entry.insert(0, id_real)
+                self.id_entry.configure(state="readonly")
+                
+                # CHECK ATTENDANCE STATUS và set status accordingly
+                current_time = time.time()
+                if id_real in self.attendance_sent:
+                    time_since_sent = current_time - self.attendance_sent[id_real]
+                    if time_since_sent < self.attendance_reset_time:
+                        # Attendance đã được gửi trong 5 phút qua
+                        self.status_display.configure(
+                            text="✅ Đã điểm danh",
+                            text_color="green"
+                        )
+                    else:
+                        # Attendance cũ, có thể điểm danh lại
+                        self.status_display.configure(
+                            text="Đang xử lý...",
+                            text_color="orange"
+                        )
+                else:
+                    # Chưa điểm danh
+                    self.status_display.configure(
+                        text="Đang xử lý...",
+                        text_color="orange"
+                    )
+                
+                # Store card data with creation time
+                self.active_face_card = {
+                    "person_name": person_name,
+                    "face_data": face_data,
+                    "created_time": time.time(),
+                    "id_real": id_real,
+                    "full_name": full_name
+                }
+                
+                # Schedule card removal after display time
+                def clear_after_timeout():
+                    time.sleep(self.card_display_time)
+                    self.root.after(0, self._clear_id_card)
+                
+                threading.Thread(target=clear_after_timeout, daemon=True).start()
+                
+                print(f"✅ Created ID card for {person_name} (will clear in {self.card_display_time}s)")
+                
+            except Exception as e:
+                print(f"Error creating card: {e}")
+    
+    def _update_avatar_image(self, face_image):
+        """Update avatar image"""
+        try:
+            face_resized = cv2.resize(face_image, (131, 141))
+            face_rgb = cv2.cvtColor(face_resized, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(face_rgb)
+            photo = ImageTk.PhotoImage(pil_image)
+            
+            self.avatar_label.configure(image=photo, text="")
+            self.avatar_label.image = photo
+            
+        except Exception as e:
+            print(f"Error updating avatar: {e}")
+    
+    def _clear_id_card(self):
+        """Clear ID card"""
+        try:
+            # Reset avatar
+            self.avatar_label.configure(image="", text="👤")
+            self.avatar_label.image = None
+            
+            # Clear text fields
+            self.name_entry.configure(state="normal")
+            self.name_entry.delete(0, "end")
+            self.name_entry.configure(state="readonly")
+            
+            self.id_entry.configure(state="normal")
+            self.id_entry.delete(0, "end")
+            self.id_entry.configure(state="readonly")
+            
+            # Reset status
+            self.status_display.configure(
+                text="Spoof Status",
+                text_color="white"
+            )
+            
+            # Clear card data
+            self.active_face_card = None
+            self.current_face_id = None
+            
+            print("🗑️ Cleared ID card")
+            
+        except Exception as e:
+            print(f"Error clearing card: {e}")
+    
+    def _extract_face_from_frame(self, frame, box):
+        """Extract face region from frame"""
+        try:
+            x1, y1, x2, y2 = box
+            padding = 20
+            x1 = max(0, x1 - padding)
+            y1 = max(0, y1 - padding)
+            x2 = min(frame.shape[1], x2 + padding)
+            y2 = min(frame.shape[0], y2 + padding)
+            
+            face_crop = frame[y1:y2, x1:x2]
+            return face_crop
+        except Exception as e:
+            print(f"Error extracting face: {e}")
+            return None
+    
     def _ui_update_loop(self):
-        """Main UI update loop running in separate thread"""
+        """Simplified UI update loop"""
         while self.ui_thread_running:
             try:
-                # Check if main loop is running before updating
-                if not self.root.winfo_exists():
-                    continue
-                    
-                # Update frame
+                # Update camera frame
                 try:
                     frame = self.frame_queue.get_nowait()
                     self._update_camera_display(frame)
                 except Empty:
                     pass
                 
-                # Update events
-                try:
-                    event = self.event_queue.get_nowait()
-                    current_time = time.time()
-                    # Only update if enough time has passed
-                    if current_time - self.last_event_update > self.event_update_interval:
-                        self._update_recognition_display()
-                        self.last_event_update = current_time
-                except Empty:
-                    pass
+                # Clean up old attendance records
+                self._cleanup_attendance_tracking()
                 
-                # Update status
-                try:
-                    status = self.status_queue.get_nowait()
-                    self._update_status_display(status)
-                except Empty:
-                    pass
-                    
-                time.sleep(0.1)  # Prevent high CPU usage
+                time.sleep(0.1)
                 
             except Exception as e:
-                if "main thread is not in main loop" not in str(e):
-                    print(f"UI update error: {e}")
+                print(f"UI update error: {e}")
                 time.sleep(0.1)
     
-    def _update_camera_display(self, frame):
-        """Update camera display with new frame"""
-        try:
-            # Convert BGR to RGB
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Resize frame to fit display
-            display_height = 480
-            aspect_ratio = frame.shape[1] / frame.shape[0]
-            display_width = int(display_height * aspect_ratio)
-            
-            frame_resized = cv2.resize(frame_rgb, (display_width, display_height))
-            
-            # Convert to PIL Image and then to PhotoImage
-            pil_image = Image.fromarray(frame_resized)
-            photo = ImageTk.PhotoImage(pil_image)
-            
-            # Update label (must be done in main thread)
-            def update_label():
-                try:
-                    if self.root.winfo_exists():
-                        self.camera_label.configure(image=photo, text="")
-                        self.camera_label.image = photo  # Keep a reference
-                except Exception:
-                    pass  # Ignore if window is closed
-            
-            # Only schedule update if main loop is running
-            try:
-                self.root.after(0, update_label)
-            except RuntimeError:
-                pass  # Main loop not running yet
-            
-        except Exception as e:
-            print(f"Camera display update error: {e}")
+    def _cleanup_attendance_tracking(self):
+        """Clean up old attendance tracking"""
+        current_time = time.time()
+        expired_ids = []
+        
+        for face_id, sent_time in self.attendance_sent.items():
+            if current_time - sent_time > self.attendance_reset_time:
+                expired_ids.append(face_id)
+        
+        for face_id in expired_ids:
+            del self.attendance_sent[face_id]
     
-    def _update_recognition_display(self):
-        """Update recognition results display - CHỈ KHI CẦN THIẾT"""
+    def _update_camera_display(self, frame):
+        """Update camera display"""
         def update_display():
-            # Lấy danh sách events hiện tại cần hiển thị
-            current_time = time.time()
-            visible_events = []
-            
-            for event in self.event_log[:20]:  # Chỉ lấy 20 events gần nhất
-                if current_time - event["timestamp"] <= self.display_time:
-                    visible_events.append(event)
-            
-            # So sánh với events hiện tại để tránh recreate không cần thiết
-            existing_widgets = list(self.scrollable_frame.winfo_children())
-            
-            # Nếu số lượng events khác nhau thì mới recreate
-            if len(visible_events) != len(existing_widgets):
-                # Clear existing widgets
-                for widget in existing_widgets:
-                    widget.destroy()
+            try:
+                target_width = 471
+                target_height = 361
                 
-                # Create new widgets
-                for i, event in enumerate(visible_events):
-                    self._create_event_widget(event, i)
-            else:
-                # Chỉ update text của widgets hiện có
-                for i, (event, widget) in enumerate(zip(visible_events, existing_widgets)):
-                    self._update_event_widget(widget, event)
+                h, w = frame.shape[:2]
+                aspect_ratio = w / h
+                
+                if aspect_ratio > target_width / target_height:
+                    display_width = target_width
+                    display_height = int(target_width / aspect_ratio)
+                else:
+                    display_height = target_height
+                    display_width = int(target_height * aspect_ratio)
+                
+                display_frame = cv2.resize(frame, (display_width, display_height))
+                display_frame = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(display_frame)
+                photo = ImageTk.PhotoImage(pil_image)
+                
+                self.camera_label.configure(image=photo, text="")
+                self.camera_label.image = photo
+                
+            except Exception as e:
+                print(f"Camera display error: {e}")
         
         self.root.after(0, update_display)
     
-    def _create_event_widget(self, event, index):
-        """Create widget for recognition event"""
-        # Event frame
-        event_frame = ctk.CTkFrame(self.scrollable_frame)
-        event_frame.grid(row=index, column=0, padx=5, pady=2, sticky="ew")
-        event_frame.grid_columnconfigure(0, weight=1)
-        
-        # Name label
-        name_color = "green" if event["status"] == "REAL" else "red"
-        name_label = ctk.CTkLabel(
-            event_frame,
-            text=event["label"],
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=name_color
-        )
-        name_label.grid(row=0, column=0, padx=10, pady=5, sticky="w")
-        
-        # Status and time
-        time_str = time.strftime("%H:%M:%S", time.localtime(event["timestamp"]))
-        status_text = f"{event['status']} - {time_str}"
-        
-        status_label = ctk.CTkLabel(
-            event_frame,
-            text=status_text,
-            font=ctk.CTkFont(size=10)
-        )
-        status_label.grid(row=1, column=0, padx=10, pady=(0, 5), sticky="w")
-        
-        # Attendance status if available
-        parts = event["label"].split('_', 1)
-        entry_id = parts[0] if len(parts) > 1 else event["label"]
-        
-        attendance_label = ctk.CTkLabel(
-            event_frame,
-            text="",
-            font=ctk.CTkFont(size=10)
-        )
-        attendance_label.grid(row=2, column=0, padx=10, pady=(0, 5), sticky="w")
-        
-        # Update attendance status
-        self._update_attendance_status(attendance_label, entry_id, event)
-        
-        # Store references for later updates
-        event_frame.name_label = name_label
-        event_frame.status_label = status_label
-        event_frame.attendance_label = attendance_label
-        event_frame.event_data = event
-    
-    def _update_event_widget(self, widget, event):
-        """Update existing event widget with new data"""
-        try:
-            # LUÔN UPDATE ATTENDANCE STATUS cho widget hiện có
-            parts = event["label"].split('_', 1)
-            entry_id = parts[0] if len(parts) > 1 else event["label"]
-            
-            # Update attendance status NGAY LẬP TỨC
-            if hasattr(widget, 'attendance_label'):
-                self._update_attendance_status(widget.attendance_label, entry_id, event)
-            
-            # Update other info only if event data changed
-            if hasattr(widget, 'event_data') and widget.event_data != event:
-                # Update name label
-                name_color = "green" if event["status"] == "REAL" else "red"
-                widget.name_label.configure(text=event["label"], text_color=name_color)
-                
-                # Update status and time
-                time_str = time.strftime("%H:%M:%S", time.localtime(event["timestamp"]))
-                status_text = f"{event['status']} - {time_str}"
-                widget.status_label.configure(text=status_text)
-                
-                # Store new event data
-                widget.event_data = event
-                
-        except Exception as e:
-            print(f"Error updating event widget: {e}")
-    
-    def _update_attendance_status(self, attendance_label, entry_id, event):
-        """Update attendance status for an event"""
-        if entry_id in self.attendance_status:
-            status_info = self.attendance_status[entry_id]
-            attendance_label.configure(
-                text=status_info["message"],
-                text_color="green" if status_info["status"] == "success" else "red"
-            )
-        elif event["status"] == "REAL" and event["label"] != "Unknown":
-            attendance_label.configure(
-                text="Đang xử lý...",
-                text_color="gray"
-            )
-        else:
-            attendance_label.configure(text="")
-    
-    def _update_status_display(self, status_text):
-        """Update status label"""
-        def update_status():
-            self.status_label.configure(text=status_text)
-        
-        self.root.after(0, update_status)
-    
     def _add_face_dialog(self):
-        """Show dialog to add new face"""
-        if not self.current_frame is None and self.face_recognition_system:
-            dialog = ctk.CTkInputDialog(
-                text="Enter name for the face (format: ID_Name):",
-                title="Add Face"
-            )
-            name = dialog.get_input()
-            
-            if name and name.strip():
-                # Add face in background thread
+        """Dialog to add new face"""
+        if self.current_frame is None:
+            print("⚠️ No camera frame available")
+            return
+        
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Add New Face")
+        dialog.geometry("400x200")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        dialog.geometry("+%d+%d" % (
+            self.root.winfo_rootx() + 100,
+            self.root.winfo_rooty() + 100
+        ))
+        
+        name_label = ctk.CTkLabel(dialog, text="Enter name (format: ID_FullName):")
+        name_label.pack(pady=10)
+        
+        name_entry = ctk.CTkEntry(dialog, width=300, placeholder_text="e.g., 22110158_Nguyen Van Nam")
+        name_entry.pack(pady=10)
+        name_entry.focus()
+        
+        button_frame = ctk.CTkFrame(dialog)
+        button_frame.pack(pady=20)
+        
+        def add_face():
+            name = name_entry.get().strip()
+            if name and self.face_recognition_system:
+                dialog.destroy()
                 threading.Thread(
                     target=self._add_face_worker,
-                    args=(self.current_frame.copy(), name.strip()),
+                    args=(self.current_frame.copy(), name),
                     daemon=True
                 ).start()
+            else:
+                print("⚠️ Please enter a valid name")
+        
+        add_button = ctk.CTkButton(button_frame, text="Add Face", command=add_face)
+        add_button.pack(side=tk.LEFT, padx=10)
+        
+        cancel_button = ctk.CTkButton(button_frame, text="Cancel", command=dialog.destroy)
+        cancel_button.pack(side=tk.LEFT, padx=10)
+        
+        name_entry.bind("<Return>", lambda e: add_face())
     
     def _add_face_worker(self, frame, name):
         """Worker thread for adding face"""
         try:
-            if self.face_recognition_system:
-                success = self.face_recognition_system.add_face_to_database(frame, name)
-                message = f"✅ Added face: {name}" if success else f"❌ Failed to add: {name}"
-                
-                # Update status
-                if not self.status_queue.full():
-                    self.status_queue.put(message)
-                
-                print(message)
+            success = self.face_recognition_system.add_face_to_database(frame, name)
+            status = f"✅ Successfully added {name}" if success else f"❌ Failed to add {name}"
+            print(status)
         except Exception as e:
-            error_msg = f"❌ Error adding face: {str(e)}"
-            if not self.status_queue.full():
-                self.status_queue.put(error_msg)
-            print(error_msg)
+            print(f"❌ Error adding {name}: {str(e)}")
     
     # Thread-safe methods for external updates
     def update_frame(self, frame):
@@ -388,47 +440,78 @@ class FaceRecognitionTkinterUI:
         self.current_frame = frame
         if not self.frame_queue.full():
             try:
-                # Remove old frame if queue is full
-                try:
-                    self.frame_queue.get_nowait()
-                except Empty:
-                    pass
                 self.frame_queue.put(frame)
             except:
                 pass
     
     def update_recognition_results(self, results):
-        """Update recognition results (thread-safe) - KHÔNG LÀM GÌ CẢ"""
-        # Chỉ lưu results, không trigger UI update
-        self.recognition_results = results
+        """IMPROVED: Update recognition results with proper face image capture"""
+        # Find the best real face
+        best_face = None
+        for result in results:
+            name = result.get("name", "Unknown")
+            is_real = result.get("is_real", True)
+            
+            if is_real and name != "Unknown" and "FAKE" not in name:
+                best_face = result
+                break
+        
+        if best_face:
+            name = best_face.get("name")
+            box = best_face.get("box")
+            
+            # Extract face ID
+            parts = name.split('_', 1)
+            face_id = parts[0] if len(parts) > 1 else name
+            
+            # ALWAYS extract face image when detected
+            face_image = None
+            if box and self.current_frame is not None:
+                face_image = self._extract_face_from_frame(self.current_frame, box)
+            
+            # ONLY CREATE CARD IF IT'S A DIFFERENT FACE
+            if self.current_face_id != face_id:
+                self.current_face_id = face_id
+                
+                # Get face data from database
+                face_data = {}
+                if hasattr(self, 'face_recognition_system') and self.face_recognition_system:
+                    face_db = getattr(self.face_recognition_system, 'face_db', {})
+                    if name in face_db:
+                        face_data = face_db[name]
+                
+                # Create card in main thread với face image
+                def create_card():
+                    self._create_id_card(name, face_data, face_image)
+                
+                self.root.after(0, create_card)
     
     def add_event(self, name, is_real):
-        """Add recognition event (thread-safe)"""
+        """Add recognition event with IMPROVED attendance tracking"""
         current_time = time.time()
         
-        # Check cooldown
-        if name in self.user_cooldowns:
-            if current_time - self.user_cooldowns[name] < self.cooldown_period:
+        # Extract ID for tracking
+        parts = name.split('_', 1)
+        face_id = parts[0] if len(parts) > 1 else name
+        
+        # CHECK IF ATTENDANCE ALREADY SENT
+        if face_id in self.attendance_sent:
+            time_since_sent = current_time - self.attendance_sent[face_id]
+            if time_since_sent < self.attendance_reset_time:
+                print(f"⏰ Attendance already sent for {face_id}, skipping (sent {time_since_sent:.0f}s ago)")
                 return
         
+        # CHECK USER COOLDOWN (chỉ cho việc gửi attendance, không ảnh hưởng card)
+        if name in self.user_cooldowns:
+            if current_time - self.user_cooldowns[name] < self.cooldown_period:
+                print(f"⏰ User cooldown active for {name}, skipping")
+                return
+        
+        # UPDATE COOLDOWN
         self.user_cooldowns[name] = current_time
         
-        # Add to event log
-        event = {
-            "label": name,
-            "status": "REAL" if is_real else "FAKE",
-            "timestamp": current_time
-        }
-        
-        self.event_log.insert(0, event)
-        
-        # Limit event log size
-        if len(self.event_log) > 100:
-            self.event_log = self.event_log[:100]
-        
-        # Process attendance for real faces
+        # PROCESS ATTENDANCE FOR REAL FACES
         if is_real and "FAKE" not in name and name != "Unknown":
-            parts = name.split('_', 1)
             if len(parts) > 1 and parts[0].isalnum():
                 id_real = parts[0]
                 full_name = parts[1]
@@ -436,92 +519,101 @@ class FaceRecognitionTkinterUI:
                 id_real = name
                 full_name = name
             
+            # MARK AS SENT TRƯỚC KHI GỬI
+            self.attendance_sent[face_id] = current_time
+            
             print(f"✅ Sending attendance for ID: {id_real}, Name: {full_name}")
             self.api_client.mark_attendance(id_real, full_name)
-        
-        # Trigger UI update bằng cách gửi signal qua queue
-        if not self.event_queue.full():
-            try:
-                self.event_queue.put("new_event")
-            except:
-                pass
+            
+            # UPDATE STATUS if card is currently showing this person
+            if (self.active_face_card and 
+                self.active_face_card.get("id_real") == id_real):
+                def update_status():
+                    if self.active_face_card and self.active_face_card.get("id_real") == id_real:
+                        self.status_display.configure(
+                            text="⏳ Đang gửi...",
+                            text_color="yellow"
+                        )
+                self.root.after(0, update_status)
     
-    # API callbacks
     def on_attendance_success(self, attendance_data, response_data):
-        """Callback for successful attendance recording"""
-        id_real = attendance_data['id_real']
-        name = attendance_data['name']
+        """Handle successful attendance"""
+        def update_status():
+            # Chỉ update nếu card hiện tại là của người này
+            person_id = attendance_data.get('id_real', 'Unknown')
+            if (self.active_face_card and 
+                self.active_face_card.get("id_real") == person_id):
+                
+                api_message = response_data.get('message', 'Thành công')
+                if 'First attendance' in api_message:
+                    status_text = "✅ Điểm danh đầu"
+                elif 'updated' in api_message:
+                    status_text = "✅ Cập nhật"
+                else:
+                    status_text = "✅ Thành công"
+                    
+                self.status_display.configure(
+                    text=status_text,
+                    text_color="green"
+                )
         
-        self.attendance_status[id_real] = {
-            "status": "success",
-            "message": f"✅ Recorded: {name}",
-            "timestamp": time.time(),
-            "name": name
-        }
+        self.root.after(0, update_status)
         
-        if not self.status_queue.full():
-            self.status_queue.put(f"✅ Attendance recorded: {name}")
+        person_name = attendance_data.get('name', 'Unknown')
+        person_id = attendance_data.get('id_real', 'Unknown')
+        api_message = response_data.get('message', 'Success')
         
-        # # Trigger UI update
-        # if not self.event_queue.full():
-        #     try:
-        #         self.event_queue.put("attendance_update")
-        #     except:
-        #         pass
-        self.root.after(0, self._update_recognition_display)
-    
+        print(f"✅ Attendance success for {person_name} (ID: {person_id}) - {api_message}")
+
     def on_attendance_error(self, attendance_data, error_msg):
-        """Callback for attendance recording error"""
-        id_real = attendance_data['id_real']
-        name = attendance_data['name']
+        """Handle attendance error"""
+        def update_status():
+            # Chỉ update nếu card hiện tại là của người này
+            person_id = attendance_data.get('id_real', 'Unknown')
+            if (self.active_face_card and 
+                self.active_face_card.get("id_real") == person_id):
+                
+                self.status_display.configure(
+                    text="❌ Thất bại",
+                    text_color="red"
+                )
         
-        self.attendance_status[id_real] = {
-            "status": "error",
-            "message": f"❌ Failed: {name}",
-            "timestamp": time.time(),
-            "name": name
-        }
+        self.root.after(0, update_status)
         
-        if not self.status_queue.full():
-            self.status_queue.put(f"❌ Attendance failed: {name}")
+        # Remove from sent tracking on error so it can be retried
+        face_id = attendance_data.get('id_real')
+        if face_id and face_id in self.attendance_sent:
+            del self.attendance_sent[face_id]
         
-        # # Trigger UI update
-        # if not self.event_queue.full():
-        #     try:
-        #         self.event_queue.put("attendance_update")
-        #     except:
-        #         pass
-        self.root.after(0, self._update_recognition_display)
+        person_name = attendance_data.get('name', 'Unknown')
+        person_id = attendance_data.get('id_real', 'Unknown')
+        
+        print(f"❌ Attendance failed for {person_name} (ID: {person_id}): {error_msg}")
     
     def should_quit(self):
-        """Check if quit was requested"""
         return self.quit_requested
     
     def _on_closing(self):
-        """Handle window closing"""
+        print("🔄 Closing application...")
         self.quit_requested = True
         self.ui_thread_running = False
         
-        # Stop API client
-        if self.api_client:
-            self.api_client.stop()
+        if hasattr(self, 'api_client'):
+            try:
+                self.api_client.stop()
+            except Exception as e:
+                print(f"Error stopping API client: {e}")
         
-        # Wait for UI thread to finish
-        if self.ui_update_thread.is_alive():
-            self.ui_update_thread.join(timeout=1.0)
+        time.sleep(0.5)
         
-        # Destroy window
-        self.root.quit()
-        self.root.destroy()
+        try:
+            self.root.quit()
+            self.root.destroy()
+        except Exception as e:
+            print(f"Error during window cleanup: {e}")
     
     def run(self):
-        """Start the UI main loop"""
-        try:
-            self.root.mainloop()
-        except Exception as e:
-            print(f"UI error: {e}")
-            self._on_closing()
+        self.root.mainloop()
     
     def close(self):
-        """Close the UI"""
         self._on_closing()

@@ -78,8 +78,12 @@ class AttendanceAPIClient:
                 )
                 
                 if response.status_code in [200, 201]:
-                    print(f"✅ Attendance recorded for {attendance_data['name']}")
+                    # SỬA: Hiển thị thông tin chi tiết hơn
+                    person_name = attendance_data.get('name', 'Unknown')
                     response_data = response.json()
+                    api_message = response_data.get('message', 'Success')
+                    
+                    print(f"✅ Attendance recorded for {person_name} - {api_message}")
                     
                     # Call success callback if registered
                     if self.success_callback:
@@ -87,16 +91,16 @@ class AttendanceAPIClient:
                         
                     return response_data
                 else:
-                    error_msg = f"❌ Failed to record attendance: {response.status_code}, {response.text}"
-                    print(error_msg)
+                    error_msg = f"HTTP {response.status_code}: {response.text}"
+                    print(f"❌ Failed to record attendance: {error_msg}")
                     
                     # Call error callback if registered
                     if self.error_callback and attempt == self.max_retries - 1:
                         self.error_callback(attendance_data, error_msg)
-                    
+                
             except requests.RequestException as e:
-                error_msg = f"⚠️ Network error (attempt {attempt+1}/{self.max_retries}): {str(e)}"
-                print(error_msg)
+                error_msg = f"Network error: {str(e)}"
+                print(f"⚠️ Attendance API error (attempt {attempt+1}/{self.max_retries}): {error_msg}")
                 
                 # Call error callback if registered and on last attempt
                 if self.error_callback and attempt == self.max_retries - 1:
@@ -104,12 +108,13 @@ class AttendanceAPIClient:
                 
             # Wait before retry if not the last attempt
             if attempt < self.max_retries - 1:
+                print(f"⏳ Retrying in {self.retry_interval} seconds...")
                 time.sleep(self.retry_interval)
                 
         print(f"❌ Failed to record attendance after {self.max_retries} attempts")
         return None
     
-    def mark_attendance(self, id_real, name):
+    def mark_attendance(self, id_real, full_name):
         """
         Queue an attendance record to be sent to the API
         
@@ -122,10 +127,10 @@ class AttendanceAPIClient:
         # Prepare attendance data
         attendance_data = {
             "id_real": id_real,
-            "name": name,
+            "name": full_name,
             "time": current_time
         }
         
         # Add to queue for background processing
         self.queue.put(attendance_data)
-        print(f"➕ Queued attendance for {name} ({id_real})")
+        print(f"➕ Queued attendance for {full_name} ({id_real})")
