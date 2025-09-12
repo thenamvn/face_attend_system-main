@@ -404,8 +404,10 @@ def webcam_demo():
     
     # Motion callback function
     def on_motion_change(is_active):
-        nonlocal last_frame
+        nonlocal last_frame, cap
         if is_active:
+            if cap is None:
+                cap = VideoCaptureThread().start()
             print("🔄 System resuming active processing")
         else:
             print("🛑 System entering low-power standby")
@@ -416,6 +418,8 @@ def webcam_demo():
                     last_frame = frame.copy()
                 else:
                     print("⚠️ Could not capture frame for standby")
+                cap.stop()
+                cap = None
             # Clear recognition results when entering standby
             ui.update_recognition_results([])
     
