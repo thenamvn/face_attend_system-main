@@ -173,15 +173,15 @@ class FaceRecognitionTkinterUI:
         self.status_display.place(x=70, y=300)
         
         # Add Face button
-        self.add_face_button = ctk.CTkButton(
-            self.root,
-            text="Add Face (A)",
-            command=self._add_face_dialog,
-            font=ctk.CTkFont(size=12),
-            width=100,
-            height=30
-        )
-        self.add_face_button.place(x=10, y=10)
+        # self.add_face_button = ctk.CTkButton(
+        #     self.root,
+        #     text="Add Face (A)",
+        #     command=self._add_face_dialog,
+        #     font=ctk.CTkFont(size=12),
+        #     width=100,
+        #     height=30
+        # )
+        # self.add_face_button.place(x=10, y=10)
         
     def _create_id_card(self, person_name, face_data, face_image=None):
         """Create/Update ID card with attendance status logic"""
@@ -498,7 +498,7 @@ class FaceRecognitionTkinterUI:
         if face_id in self.attendance_sent:
             time_since_sent = current_time - self.attendance_sent[face_id]
             if time_since_sent < self.attendance_reset_time:
-                print(f"⏰ Attendance already sent for {face_id}, skipping (sent {time_since_sent:.0f}s ago)")
+                # print(f"⏰ Attendance already sent for {face_id}, skipping (sent {time_since_sent:.0f}s ago)")
                 return
         
         # CHECK USER COOLDOWN (chỉ cho việc gửi attendance, không ảnh hưởng card)

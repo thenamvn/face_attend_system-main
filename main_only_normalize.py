@@ -109,8 +109,7 @@ class FaceRecognitionSystem:
             original_name = name # Lưu tên gốc trước khi kiểm tra fake
 
             if name != "Unknown": # Chỉ kiểm tra real/fake nếu khuôn mặt được nhận diện
-                # 6. Anti spoofing for KNOWN face
-                spoofing_start = time.time()
+                # 6. Anti spoofing for KNOWN faces
                 # Calculate the expanded facial area with margin (10%)
                 margin = 0.1
                 x1_exp = max(0, x1 - int((x2-x1) * margin))
